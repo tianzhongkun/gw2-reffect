@@ -1,3 +1,13 @@
+__pycache__/
+*.py[cod]
+
 /target
-.vs*
-.cargo
+
+# Local reverse-engineering scratch (IDA databases, decompilation dumps)
+/re_work
+*.i64
+*.idb
+/Reffect.dll
+
+# Local reference screenshots, not part of the source tree
+/图片/
