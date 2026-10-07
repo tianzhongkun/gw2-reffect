@@ -15,8 +15,8 @@ use reffect_core::{
     context::{
         Ability, AbilityInfo, ActiveCooldown, Affinity, Buff, BuffMap, Build, CombatantResources,
         Context, Defiance, Gear, GroupInfo, GroupMember, GroupType, PlayerBuffInfo, PlayerHealth,
-        PlayerResources, ProfSelection, Profession, Race, Resource, ResourceState, SkillId, Skillbar,
-        Slot, Specialization, TargetCategory, Update, Weapon,
+        PlayerResources, ProfSelection, Profession, Race, Resource, ResourceState, SkillId,
+        Skillbar, Slot, Specialization, TargetCategory, Update, Weapon,
     },
     error::Error,
 };
@@ -379,7 +379,7 @@ fn state_worker_loop(stop: Arc<AtomicBool>) {
                         telemetry.status()
                     );
                 }
-                if unavailable_polls % 100 == 0 {
+                if unavailable_polls.is_multiple_of(100) {
                     log::debug!(
                         "[reffect-runtime] snapshot still unavailable after {}s",
                         unavailable_polls / 10
@@ -426,8 +426,12 @@ impl GameStateReader {
             .buffs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot =
-            decode_snapshot(&ProcessMemory, captured.collection, captured.local, &mut buffs);
+        let snapshot = decode_snapshot(
+            &ProcessMemory,
+            captured.collection,
+            captured.local,
+            &mut buffs,
+        );
         // TEMP DEBUG 2026-10-04: 定位 memory 链路（1Hz 限频，诊断完删除）。
         {
             use std::sync::atomic::{AtomicU64, Ordering};
@@ -606,8 +610,12 @@ fn decode_snapshot(
         // the Evoker familiar) are appended and drive the profession selection.
         let equipped_skills = read_selected_skills(game, slot, &build.specs);
         let selection_skills = read_selection_skills(game, slot, &build.specs);
-        let (skill_selections, prof_selections) =
-            build_runtime_selections(profession, &skillbar.bar, &equipped_skills, &selection_skills);
+        let (skill_selections, prof_selections) = build_runtime_selections(
+            profession,
+            &skillbar.bar,
+            &equipped_skills,
+            &selection_skills,
+        );
         build.skill_selections = skill_selections;
         build.prof_selections = prof_selections;
     }
@@ -869,7 +877,10 @@ fn read_identity(game: &impl GameMemory, character: usize) -> (Option<u8>, Optio
 }
 
 #[cfg(test)]
-fn read_player_resources(game: &impl GameMemory, character: usize) -> Option<PlayerResourceSnapshot> {
+fn read_player_resources(
+    game: &impl GameMemory,
+    character: usize,
+) -> Option<PlayerResourceSnapshot> {
     read_player_resources_at(game, character, tick_count())
 }
 
@@ -896,8 +907,8 @@ fn read_player_resources_for_profession_at(
     now: u32,
 ) -> Option<PlayerResourceSnapshot> {
     let combatant = read_combatant_resources(game, character, now)?;
-    let pet =
-        owned_pet_character(game, character).and_then(|pet| read_combatant_resources(game, pet, now));
+    let pet = owned_pet_character(game, character)
+        .and_then(|pet| read_combatant_resources(game, pet, now));
     let endurance = pointer_at(game, character, CHARACTER_ENDURANCE)
         .and_then(|endurance| {
             let current = value_at::<u32>(game, endurance, ENDURANCE_CURRENT)? as f32;
@@ -1065,11 +1076,8 @@ fn read_elementalist_charge_resources(
     };
     match specialization {
         Some(SPEC_ELEMENTALIST_EVOKER) => {
-            let primary = read_scaled_charge(
-                game,
-                profession_object,
-                ELEMENTALIST_EVOKER_CHARGE_DIVISOR,
-            );
+            let primary =
+                read_scaled_charge(game, profession_object, ELEMENTALIST_EVOKER_CHARGE_DIVISOR);
             // The enhanced charges are a runtime effect-stack count in the
             // original, derived from the character effect tree rather than a
             // profession-object field.
@@ -1282,8 +1290,15 @@ fn read_resources_from_health(
     // the last-tick sample, so the displayed value is `base + (now - tick)/1000
     // * rate` clamped to max. Without this, the bar lags the actual health
     // during regeneration.
-    let current =
-        interpolate_sampled(game, health, HEALTH_SAMPLE_TICK, HEALTH_RATE, base_current, max, now);
+    let current = interpolate_sampled(
+        game,
+        health,
+        HEALTH_SAMPLE_TICK,
+        HEALTH_RATE,
+        base_current,
+        max,
+        now,
+    );
     let barrier = value_at::<f32>(game, health, barrier_layout.current)
         .filter(|barrier| barrier.is_finite() && *barrier >= 0.0)
         .map(|base_barrier| {
@@ -1433,7 +1448,10 @@ fn read_skillbar(game: &impl GameMemory, character: usize, now: u32) -> Option<S
     log_profession_slots(game, &skillbar, pet_combatant);
 
     let active = build_active_cooldowns(&skillbar, &cooldowns, now);
-    any.then_some(SkillbarSnapshot { bar: skillbar, active })
+    any.then_some(SkillbarSnapshot {
+        bar: skillbar,
+        active,
+    })
 }
 
 /// Persistent per-skill anchor for the game's coarse cooldown snapshots.
@@ -1708,23 +1726,21 @@ fn build_runtime_selections(
                 prof_selections.insert(ProfSelection::LegendEntity);
             }
         }
-        Some(6) => {
+        Some(6) if !selection_skills.is_empty() => {
             // Elementalist Evoker familiar: a single selection derived from the
             // profession-selection skill ids (not the equipped skillbar). The
             // original scans them in order and takes the first familiar id it
             // finds, defaulting to Fire when the list carries none.
-            if !selection_skills.is_empty() {
-                let familiar = selection_skills
-                    .iter()
-                    .find_map(|id| match *id {
-                        EVOKER_FAMILIAR_WATER => Some(ProfSelection::FamiliarWater),
-                        EVOKER_FAMILIAR_EARTH => Some(ProfSelection::FamiliarEarth),
-                        EVOKER_FAMILIAR_AIR => Some(ProfSelection::FamiliarAir),
-                        _ => None,
-                    })
-                    .unwrap_or(ProfSelection::FamiliarFire);
-                prof_selections.insert(familiar);
-            }
+            let familiar = selection_skills
+                .iter()
+                .find_map(|id| match *id {
+                    EVOKER_FAMILIAR_WATER => Some(ProfSelection::FamiliarWater),
+                    EVOKER_FAMILIAR_EARTH => Some(ProfSelection::FamiliarEarth),
+                    EVOKER_FAMILIAR_AIR => Some(ProfSelection::FamiliarAir),
+                    _ => None,
+                })
+                .unwrap_or(ProfSelection::FamiliarFire);
+            prof_selections.insert(familiar);
         }
         _ => {}
     }
@@ -2130,7 +2146,8 @@ impl BuffSnapshotCache {
 
     fn cached(&self, key: &usize, now: u32) -> Option<Option<BuffMap>> {
         let snapshot = self.entries.get(key)?;
-        (now.wrapping_sub(snapshot.captured_at) < BUFF_SNAPSHOT_POLL).then(|| snapshot.buffs.clone())
+        (now.wrapping_sub(snapshot.captured_at) < BUFF_SNAPSHOT_POLL)
+            .then(|| snapshot.buffs.clone())
     }
 
     fn store(&mut self, key: usize, now: u32, buffs: Option<BuffMap>) {
@@ -2182,7 +2199,11 @@ fn read_buffs_at(game: &impl GameMemory, character: usize, now: u32) -> Option<B
 }
 
 /// Reads the active-effect list of an already resolved container.
-fn read_buffs_from_container(game: &impl GameMemory, container: usize, now: u32) -> Option<BuffMap> {
+fn read_buffs_from_container(
+    game: &impl GameMemory,
+    container: usize,
+    now: u32,
+) -> Option<BuffMap> {
     let node_offset =
         usize::try_from(value_at::<u32>(game, container, EFFECT_TREE_NODE_OFFSET)?).ok()?;
     let next_offset = node_offset.checked_add(size_of::<usize>())?;
@@ -2236,10 +2257,8 @@ fn read_buffs_from_container(game: &impl GameMemory, container: usize, now: u32)
             // own test that filters out equipment/internal effects. They are
             // published without a progress bar, matching the original's plain
             // effect entries.
-            let has_definition =
-                pointer_at(game, wrapper, EFFECT_WRAPPER_DEFINITION).is_some();
-            if has_definition || is_standard_combat_buff(id) || crate::catalog::cached_is_buff(id)
-            {
+            let has_definition = pointer_at(game, wrapper, EFFECT_WRAPPER_DEFINITION).is_some();
+            if has_definition || is_standard_combat_buff(id) || crate::catalog::cached_is_buff(id) {
                 insert_runtime_buff(&mut buffs, id, 1, 0, u32::MAX, now);
             }
         }
@@ -2829,7 +2848,10 @@ fn read_target_classification(
     local: usize,
     kind: u32,
     character: Option<usize>,
-) -> (Result<Affinity, Error>, Result<BitFlags<TargetCategory>, Error>) {
+) -> (
+    Result<Affinity, Error>,
+    Result<BitFlags<TargetCategory>, Error>,
+) {
     let unclassified = (Err(Error::Affinity), Err(Error::TargetState));
 
     match kind {
@@ -3548,10 +3570,18 @@ mod tests {
         memory.f32(profession + 0x88, 12.0);
         memory.f32(profession + 0x8C, 15.0);
 
-        let snapshot =
-            decode_snapshot(&memory, 0x20_000, character, &mut BuffSnapshotCache::default())
-                .expect("valid thief snapshot");
-        let primary = snapshot.resources.expect("player resources").resources.primary;
+        let snapshot = decode_snapshot(
+            &memory,
+            0x20_000,
+            character,
+            &mut BuffSnapshotCache::default(),
+        )
+        .expect("valid thief snapshot");
+        let primary = snapshot
+            .resources
+            .expect("player resources")
+            .resources
+            .primary;
 
         assert_eq!(snapshot.profession, Some(5));
         assert_eq!(primary.current, 12.0);
@@ -3581,8 +3611,9 @@ mod tests {
         memory.u32(profession + SAMPLE_TICK, 1_000);
         memory.f32(profession + RATE, 2.0);
 
-        let resources = read_player_resources_for_profession_at(&memory, character, Some(5), None, 1_500)
-            .expect("valid thief resources");
+        let resources =
+            read_player_resources_for_profession_at(&memory, character, Some(5), None, 1_500)
+                .expect("valid thief resources");
 
         assert_eq!(resources.resources.primary.current, 11.0);
         assert_eq!(resources.resources.primary.max, 15.0);
@@ -3604,8 +3635,9 @@ mod tests {
         memory.f32(energy + PROFESSION_ENERGY_RATE, 2.0);
         memory.u32(energy + PROFESSION_ENERGY_SAMPLE_TICK, 1_000);
 
-        let resources = read_player_resources_for_profession_at(&memory, character, Some(9), None, 1_500)
-            .expect("valid revenant resources");
+        let resources =
+            read_player_resources_for_profession_at(&memory, character, Some(9), None, 1_500)
+                .expect("valid revenant resources");
 
         assert_eq!(resources.resources.primary.current, 31.0);
         assert_eq!(resources.resources.primary.max, 50.0);
@@ -3627,8 +3659,9 @@ mod tests {
         memory.u32(profession + 0x50, 15);
         memory.u32(profession + 0x54, 30);
 
-        let resources = read_player_resources_for_profession_at(&memory, character, Some(2), None, 1_500)
-            .expect("valid warrior resources");
+        let resources =
+            read_player_resources_for_profession_at(&memory, character, Some(2), None, 1_500)
+                .expect("valid warrior resources");
 
         assert_eq!(resources.resources.primary.current, 15.0);
         assert_eq!(resources.resources.primary.max, 30.0);
@@ -3648,8 +3681,9 @@ mod tests {
         memory.u32(profession + 0x50, 3);
         memory.u32(profession + 0x54, 5);
 
-        let resources = read_player_resources_for_profession_at(&memory, character, Some(7), None, 1_500)
-            .expect("valid mesmer resources");
+        let resources =
+            read_player_resources_for_profession_at(&memory, character, Some(7), None, 1_500)
+                .expect("valid mesmer resources");
 
         assert_eq!(resources.resources.primary.current, 3.0);
         assert_eq!(resources.resources.primary.max, 5.0);
@@ -3669,8 +3703,9 @@ mod tests {
         memory.f32(profession + 0x50, 3.2);
         memory.f32(profession + 0x54, 5.8);
 
-        let resources = read_player_resources_for_profession_at(&memory, character, Some(8), None, 1_500)
-            .expect("valid necromancer resources");
+        let resources =
+            read_player_resources_for_profession_at(&memory, character, Some(8), None, 1_500)
+                .expect("valid necromancer resources");
 
         assert_eq!(resources.resources.primary.current, 4.0);
         assert_eq!(resources.resources.primary.max, 6.0);
@@ -3694,8 +3729,9 @@ mod tests {
         memory.f32(profession + PROFESSION_PRIMARY_CURRENT, 12_071.67);
         memory.f32(profession + PROFESSION_PRIMARY_MAX, 19_227.82);
 
-        let resources = read_player_resources_for_profession_at(&memory, character, Some(8), None, 1_500)
-            .expect("necro life force with a five-figure max must be published");
+        let resources =
+            read_player_resources_for_profession_at(&memory, character, Some(8), None, 1_500)
+                .expect("necro life force with a five-figure max must be published");
 
         assert_eq!(resources.resources.primary.current, 12_072.0);
         assert_eq!(resources.resources.primary.max, 19_228.0);
@@ -3760,7 +3796,10 @@ mod tests {
 
         assert_eq!(resources.resources.primary.current, 7.0);
         assert_eq!(resources.resources.primary.max, 10.0);
-        assert!(resources.resources.secondary.max == 0.0 || resources.resources.secondary.current == 0.0);
+        assert!(
+            resources.resources.secondary.max == 0.0
+                || resources.resources.secondary.current == 0.0
+        );
     }
 
     #[test]
@@ -4032,10 +4071,18 @@ mod tests {
         memory.f32(generic_energy + PROFESSION_ENERGY_CURRENT, 15.0);
         memory.f32(generic_energy + PROFESSION_ENERGY_MAX, 15.0);
 
-        let snapshot =
-            decode_snapshot(&memory, 0x20_000, character, &mut BuffSnapshotCache::default())
-                .expect("valid thief snapshot");
-        let primary = snapshot.resources.expect("player resources").resources.primary;
+        let snapshot = decode_snapshot(
+            &memory,
+            0x20_000,
+            character,
+            &mut BuffSnapshotCache::default(),
+        )
+        .expect("valid thief snapshot");
+        let primary = snapshot
+            .resources
+            .expect("player resources")
+            .resources
+            .primary;
 
         assert_eq!(primary.current, 0.0);
         assert_eq!(primary.max, 0.0);
@@ -4254,7 +4301,10 @@ mod tests {
         memory.pointer(kennel + KENNEL_PRIMARY_PET, pet);
         memory.pointer(pet + CHARACTER_COMBATANT, pet_combatant);
         // Local Profession 1 (raw 12) skill.
-        memory.pointer(combatant + COMBATANT_SKILLDEF_BASE + 12 * 8, local_definition);
+        memory.pointer(
+            combatant + COMBATANT_SKILLDEF_BASE + 12 * 8,
+            local_definition,
+        );
         memory.u32(local_definition + SKILLDEF_ID, 7_777);
         // Pet Profession 1 slot.
         memory.pointer(
@@ -4825,7 +4875,10 @@ mod tests {
         memory.u32(buff_wrapper + EFFECT_WRAPPER_STATE, 1);
         memory.u32(buff_wrapper + EFFECT_WRAPPER_ID, 739);
         memory.pointer(buff_wrapper + EFFECT_WRAPPER_VALUE, buff_wrapper + 0xD8);
-        memory.pointer(buff_wrapper + EFFECT_WRAPPER_DEFINITION, buff_wrapper + 0x100);
+        memory.pointer(
+            buff_wrapper + EFFECT_WRAPPER_DEFINITION,
+            buff_wrapper + 0x100,
+        );
         memory.u32(buff_node + EFFECT_NODE_DURATION, u32::MAX);
         memory.pointer(buff_node + 0x60, equip_node);
 

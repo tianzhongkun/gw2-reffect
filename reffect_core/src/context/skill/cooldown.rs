@@ -50,7 +50,8 @@ impl ActiveCooldown {
     /// Returns the remaining ammo recharge adjusted for the time passed.
     #[inline]
     pub fn ammo_recharge_remaining(&self, now: u32) -> u32 {
-        self.ammo_recharge_remaining.saturating_sub(self.passed(now))
+        self.ammo_recharge_remaining
+            .saturating_sub(self.passed(now))
     }
 
     #[inline]

@@ -843,7 +843,11 @@ mod tests {
                 calls.push((cursor, *state));
                 let index = *state;
                 *state += 1;
-                Ok(if index < 3 { 0x1000 + index as usize } else { 0 })
+                Ok(if index < 3 {
+                    0x1000 + index as usize
+                } else {
+                    0
+                })
             },
             |record| Ok(Some(record)),
         )

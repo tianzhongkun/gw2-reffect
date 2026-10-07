@@ -760,12 +760,7 @@ fn collection_anchoring_chcli(chcli_context: usize) -> Option<usize> {
                     continue;
                 };
                 let mut read = |address: usize| read_process_memory::<usize>(address).ok();
-                if content_store_anchored_by_module(
-                    candidate,
-                    module_base,
-                    module_end,
-                    &mut read,
-                ) {
+                if content_store_anchored_by_module(candidate, module_base, module_end, &mut read) {
                     collection = Some(candidate);
                     return false;
                 }
@@ -799,7 +794,10 @@ fn content_store_anchored_by_module(
 
 /// Reads a `usize` from `window` at `offset`, or `None` when out of range.
 fn window_qword(window: &[u8], offset: usize) -> Option<usize> {
-    let bytes: [u8; 8] = window.get(offset..offset + size_of::<usize>())?.try_into().ok()?;
+    let bytes: [u8; 8] = window
+        .get(offset..offset + size_of::<usize>())?
+        .try_into()
+        .ok()?;
     Some(usize::from_le_bytes(bytes))
 }
 
@@ -1255,9 +1253,7 @@ mod tests {
         memory
     }
 
-    fn test_reader(
-        memory: &HashMap<usize, usize>,
-    ) -> impl FnMut(usize) -> Option<usize> + '_ {
+    fn test_reader(memory: &HashMap<usize, usize>) -> impl FnMut(usize) -> Option<usize> + '_ {
         move |address| memory.get(&address).copied()
     }
 
@@ -1281,10 +1277,7 @@ mod tests {
         let mut memory = valid_chcli_memory();
         // Live TLS-slot false positive (2026-10-04): the "character" pointer
         // landed inside d3d11's code range and passed the non-null chain.
-        memory.insert(
-            TEST_LOCAL_CONTEXT + LOCAL_CONTEXT_PLAYER,
-            0x7FFA_BBB0_23E8,
-        );
+        memory.insert(TEST_LOCAL_CONTEXT + LOCAL_CONTEXT_PLAYER, 0x7FFA_BBB0_23E8);
 
         assert_eq!(
             chcli_tree_validity(

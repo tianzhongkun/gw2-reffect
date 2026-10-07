@@ -214,7 +214,8 @@ impl Addon {
                     "Off-bar cooldowns",
                     &ctx.player.active_cooldowns,
                     |cooldowns| {
-                        let offbar: Vec<_> = cooldowns.iter().filter(|cd| cd.slot.is_none()).collect();
+                        let offbar: Vec<_> =
+                            cooldowns.iter().filter(|cd| cd.slot.is_none()).collect();
                         if offbar.is_empty() {
                             ui.text("(none)");
                             return;

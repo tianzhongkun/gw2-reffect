@@ -9,8 +9,8 @@
 //! flag (`*_valid`, `count`, `has_*`) rather than relying on sentinel values.
 
 use crate::context::{
-    Ability, ActiveCooldown, Buff, Build, CombatantResources, Context, Defiance, Gear, PlayerHealth,
-    PlayerResources, Profession, Resource, ResourceState, SkillId, Slot,
+    Ability, ActiveCooldown, Buff, Build, CombatantResources, Context, Defiance, Gear,
+    PlayerHealth, PlayerResources, Profession, Resource, ResourceState, SkillId, Slot,
 };
 use strum::IntoEnumIterator;
 
@@ -446,12 +446,12 @@ fn fill_build(out: &mut RfBuild, build: &Build) {
         out.skill_selections[index] = *id;
         out.skill_selection_count += 1;
     }
-    out.prof_selections = build.prof_selections.bits() as u32;
+    out.prof_selections = build.prof_selections.bits();
     out.pets = build.pets;
 }
 
 fn fill_gear(out: &mut RfGear, gear: &Gear) {
-    out.weapons = gear.weapons.bits() as u32;
+    out.weapons = gear.weapons.bits();
     out.sigils = gear.sigils;
     out.relic = gear.relic;
 }
@@ -514,7 +514,10 @@ mod tests {
         // The exported struct must be plain-old-data (no drop glue, no
         // references) so a foreign function can read it with no marshalling.
         assert_eq!(std::mem::size_of::<f32>(), 4);
-        assert_eq!(std::mem::align_of::<RfSnapshot>(), std::mem::align_of::<f32>());
+        assert_eq!(
+            std::mem::align_of::<RfSnapshot>(),
+            std::mem::align_of::<f32>()
+        );
     }
 
     #[test]
