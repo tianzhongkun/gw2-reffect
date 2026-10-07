@@ -1,3 +1,3 @@
 fn main() {
-    println!("cargo:warning=using dummy implementation");
+    println!("cargo:rerun-if-changed=src");
 }
