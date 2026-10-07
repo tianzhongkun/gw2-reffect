@@ -177,6 +177,10 @@ pub struct RfSnapshot {
 
     // Target.
     pub target_valid: u8,
+    /// Disposition bits (`Affinity`), 0 when unknown.
+    pub target_affinity: u8,
+    /// Classification bits (`TargetCategory`), 0 when unknown.
+    pub target_category: u32,
     pub target: RfCombatant,
     pub target_buff_count: u32,
     pub target_buffs: [RfBuff; RF_MAX_BUFFS],
@@ -238,6 +242,14 @@ pub fn fill_snapshot(out: &mut RfSnapshot, ctx: &Context) {
         out.target_valid = 1;
         fill_combatant(&mut out.target, target);
     }
+    out.target_affinity = match &ctx.target.affinity {
+        Ok(affinity) => *affinity as u8,
+        Err(_) => 0,
+    };
+    out.target_category = match &ctx.target.category {
+        Ok(category) => category.bits(),
+        Err(_) => 0,
+    };
     if let Ok(target_buffs) = &ctx.target.buffs {
         out.target_buff_count = fill_buffs(&mut out.target_buffs, target_buffs, ctx.now);
     }
@@ -507,22 +519,38 @@ mod tests {
 
     #[test]
     fn snapshot_sizes() {
-        // Mirrors the ctypes definitions in scripts/read_snapshot.py. If the
-        // layout changes, update both sides together.
-        let sizes = vec![
-            ("RfResource", std::mem::size_of::<RfResource>()),
-            ("RfCombatant", std::mem::size_of::<RfCombatant>()),
-            ("RfBuff", std::mem::size_of::<RfBuff>()),
-            ("RfAbility", std::mem::size_of::<RfAbility>()),
-            ("RfCooldown", std::mem::size_of::<RfCooldown>()),
-            ("RfResources", std::mem::size_of::<RfResources>()),
-            ("RfBuild", std::mem::size_of::<RfBuild>()),
-            ("RfGear", std::mem::size_of::<RfGear>()),
-            ("RfGroupMember", std::mem::size_of::<RfGroupMember>()),
-            ("RfSnapshot", std::mem::size_of::<RfSnapshot>()),
+        // Mirrors the ctypes definitions in scripts/read_snapshot.py and the
+        // struct definitions in reffect_snapshot.h. If the layout changes,
+        // update all three sides together.
+        let sizes = [
+            ("RfResource", std::mem::size_of::<RfResource>(), 8),
+            ("RfCombatant", std::mem::size_of::<RfCombatant>(), 24),
+            ("RfBuff", std::mem::size_of::<RfBuff>(), 16),
+            ("RfAbility", std::mem::size_of::<RfAbility>(), 36),
+            ("RfCooldown", std::mem::size_of::<RfCooldown>(), 32),
+            ("RfResources", std::mem::size_of::<RfResources>(), 92),
+            ("RfBuild", std::mem::size_of::<RfBuild>(), 128),
+            ("RfGear", std::mem::size_of::<RfGear>(), 24),
+            ("RfGroupMember", std::mem::size_of::<RfGroupMember>(), 1568),
+            ("RfSnapshot", std::mem::size_of::<RfSnapshot>(), 12372),
         ];
-        for (name, size) in sizes {
-            println!("{name}: {size}");
+        for (name, size, expected) in sizes {
+            assert_eq!(size, expected, "{name} changed size");
         }
+    }
+
+    #[test]
+    fn snapshot_target_classification_field_order() {
+        // The C header and the ctypes mirror both place the classification
+        // fields directly after `target_valid`, before `target`. Pin the offsets
+        // so a reordering cannot silently desync the ABI.
+        let valid = std::mem::offset_of!(RfSnapshot, target_valid);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_affinity), valid + 1);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_category), valid + 4);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target), valid + 8);
+
+        // `RfCombatant::health_state` precedes `defiance` in both mirrors.
+        assert_eq!(std::mem::offset_of!(RfCombatant, health_state), 16);
+        assert_eq!(std::mem::offset_of!(RfCombatant, defiance), 17);
     }
 }

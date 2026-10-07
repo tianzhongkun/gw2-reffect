@@ -59,6 +59,11 @@
           "description": "Ground targeted.",
           "type": "string",
           "const": "GroundTarget"
+        },
+        {
+          "description": "Ignore recharge.",
+          "type": "string",
+          "const": "IgnoreRecharge"
         }
       ]
     },
@@ -321,7 +326,7 @@
           "default": "Duration"
         },
         "size": {
-          "description": "Bar size.",
+          "description": "Bar size in pixels.",
           "type": "array",
           "default": [
             128.0,
@@ -533,6 +538,18 @@
         {
           "type": "object",
           "properties": {
+            "ResourceInfo": {
+              "$ref": "#/$defs/ResourceInfoTrigger"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "ResourceInfo"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "AbilityInfo": {
               "$ref": "#/$defs/AbilityInfoTrigger"
             }
@@ -602,14 +619,18 @@
           "default": null
         },
         "enabled": {
-          "description": "Whether the element is enabled.",
-          "type": "boolean",
-          "default": true
+          "description": "Legacy enabled, moved to filter.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "writeOnly": true
         },
         "filter": {
           "description": "Filter configuration.",
           "$ref": "#/$defs/FilterTrigger",
           "default": {
+            "enabled": true,
             "map": {
               "category": [],
               "ids": [],
@@ -646,7 +667,7 @@
           "default": 1.0
         },
         "pos": {
-          "description": "Relative position offset.",
+          "description": "Position offset in pixels.",
           "type": "array",
           "default": [
             0.0,
@@ -773,6 +794,11 @@
       "description": "Visibility filter.",
       "type": "object",
       "properties": {
+        "enabled": {
+          "description": "Whether the element is enabled.",
+          "type": "boolean",
+          "default": true
+        },
         "map": {
           "description": "Map configuration.",
           "$ref": "#/$defs/MapTrigger",
@@ -879,7 +905,7 @@
           "default": 0.0
         },
         "size": {
-          "description": "Icon size.",
+          "description": "Icon size in pixels.",
           "type": "array",
           "default": [
             32.0,
@@ -944,13 +970,13 @@
           "default": "Dynamic"
         },
         "pad": {
-          "description": "Padding between icons.",
+          "description": "Padding between icons in pixels.",
           "type": "number",
           "format": "float",
           "default": 2.0
         },
         "size": {
-          "description": "Icon size.",
+          "description": "Icon size in pixels.",
           "type": "array",
           "default": [
             32.0,
@@ -1069,14 +1095,18 @@
           "default": false
         },
         "enabled": {
-          "description": "Whether the list icon is enabled.",
-          "type": "boolean",
-          "default": true
+          "description": "Legacy enabled, moved to filter.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "writeOnly": true
         },
         "filter": {
           "description": "Filter configuration.",
           "$ref": "#/$defs/FilterTrigger",
           "default": {
+            "enabled": true,
             "map": {
               "category": [],
               "ids": [],
@@ -1250,14 +1280,18 @@
           }
         },
         "enabled": {
-          "description": "Whether the element is enabled.",
-          "type": "boolean",
-          "default": true
+          "description": "Legacy enabled, moved to filter.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "writeOnly": true
         },
         "filter": {
           "description": "Filter configuration.",
           "$ref": "#/$defs/FilterTrigger",
           "default": {
+            "enabled": true,
             "map": {
               "category": [],
               "ids": [],
@@ -1300,7 +1334,7 @@
           "default": 1.0
         },
         "pos": {
-          "description": "Relative position offset.",
+          "description": "Position offset in pixels.",
           "type": "array",
           "default": [
             0.0,
@@ -1525,7 +1559,7 @@
           ]
         },
         "scale": {
-          "description": "Text scale.",
+          "description": "Text scale as percentage.",
           "type": [
             "number",
             "null"
@@ -1867,6 +1901,26 @@
           ]
         },
         {
+          "description": "Classification of the current target.",
+          "type": "object",
+          "properties": {
+            "categories": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TargetCategory"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "TargetCategory"
+            }
+          },
+          "required": [
+            "type",
+            "categories"
+          ]
+        },
+        {
           "description": "Endurance.",
           "type": "object",
           "properties": {
@@ -1959,6 +2013,31 @@
         }
       }
     },
+    "ResourceInfoTrigger": {
+      "description": "Resource info trigger.",
+      "type": "object",
+      "properties": {
+        "states": {
+          "description": "Resource types.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ResourceState"
+          }
+        }
+      }
+    },
+    "ResourceState": {
+      "type": "string",
+      "enum": [
+        "HealthAlive",
+        "HealthDowned",
+        "HealthDead",
+        "DefianceImmune",
+        "DefianceActive",
+        "DefianceRecover"
+      ]
+    },
     "Slot": {
       "description": "Skillbar slot.",
       "type": "string",
@@ -2033,6 +2112,111 @@
         "Ritualist"
       ]
     },
+    "TargetCategory": {
+      "description": "Category of the current target.\n\nThe flags form four independent axes: entity kind, disposition, NPC rank and\ngathering discipline. A target carries one flag per axis it could be\nclassified on, so an unknown axis simply contributes no flag.",
+      "oneOf": [
+        {
+          "description": "Player controlled character.",
+          "type": "string",
+          "const": "Player"
+        },
+        {
+          "description": "Pet of a player controlled character.",
+          "type": "string",
+          "const": "Pet"
+        },
+        {
+          "description": "Non-player character that is not hostile.",
+          "type": "string",
+          "const": "Npc"
+        },
+        {
+          "description": "Hostile or neutral non-player character.",
+          "type": "string",
+          "const": "Monster"
+        },
+        {
+          "description": "Gathering node.",
+          "type": "string",
+          "const": "Gatherable"
+        },
+        {
+          "description": "Chest.",
+          "type": "string",
+          "const": "Chest"
+        },
+        {
+          "description": "Other environmental object.",
+          "type": "string",
+          "const": "Gadget"
+        },
+        {
+          "description": "Allied, green nameplate.",
+          "type": "string",
+          "const": "Friendly"
+        },
+        {
+          "description": "Neutral, yellow nameplate. Only fights back once attacked.",
+          "type": "string",
+          "const": "Neutral"
+        },
+        {
+          "description": "Hostile, red nameplate.",
+          "type": "string",
+          "const": "Hostile"
+        },
+        {
+          "description": "Ambient creature (\"critter\"), no level and no portrait border.",
+          "type": "string",
+          "const": "Ambient"
+        },
+        {
+          "description": "Normal rank, no portrait border.",
+          "type": "string",
+          "const": "Normal"
+        },
+        {
+          "description": "Veteran rank, bronze portrait border.",
+          "type": "string",
+          "const": "Veteran"
+        },
+        {
+          "description": "Elite rank, silver portrait border.",
+          "type": "string",
+          "const": "Elite"
+        },
+        {
+          "description": "Champion rank, golden portrait border with crossed swords. What players\nusually call a boss.",
+          "type": "string",
+          "const": "Champion"
+        },
+        {
+          "description": "Legendary rank, purple starburst portrait border with crossed swords.",
+          "type": "string",
+          "const": "Legendary"
+        },
+        {
+          "description": "Epic rank, the world bosses. Drawn with a lengthened target monitor and\nan expanded portrait.",
+          "type": "string",
+          "const": "Epic"
+        },
+        {
+          "description": "Mining node, yields ore.",
+          "type": "string",
+          "const": "Ore"
+        },
+        {
+          "description": "Logging node, yields wood.",
+          "type": "string",
+          "const": "Wood"
+        },
+        {
+          "description": "Harvesting node, yields plants.",
+          "type": "string",
+          "const": "Plant"
+        }
+      ]
+    },
     "Text": {
       "description": "Text element.",
       "type": "object",
@@ -2079,7 +2263,7 @@
           "default": null
         },
         "scale": {
-          "description": "Text scale.",
+          "description": "Text scale as percentage.",
           "type": "number",
           "format": "float",
           "default": 1.0

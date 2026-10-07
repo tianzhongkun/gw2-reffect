@@ -44,6 +44,7 @@ impl ResourceInfoTrigger {
             | ProgressSource::Buff { .. }
             | ProgressSource::Ability { .. }
             | ProgressSource::SkillbarSlot { .. }
+            | ProgressSource::TargetCategory { .. }
             | ProgressSource::Endurance
             | ProgressSource::PrimaryResource
             | ProgressSource::SecondaryResource

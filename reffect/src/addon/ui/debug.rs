@@ -57,6 +57,22 @@ impl Addon {
                     Err(err) => ui.text_colored(colors::RED, err.to_string()),
                 }
 
+                ui.text("Target category:");
+                ui.same_line();
+                match &ctx.target.category {
+                    Ok(category) if category.is_empty() => ui.text("-"),
+                    Ok(category) => {
+                        for (i, entry) in category.iter().enumerate() {
+                            if i != 0 {
+                                ui.same_line();
+                            }
+                            let _color = entry.push_text_color(ui);
+                            ui.text(entry);
+                        }
+                    }
+                    Err(err) => ui.text_colored(colors::RED, err.to_string()),
+                }
+
                 ui.text(format!("Map id: {}", ctx.map.id));
                 ui.text(format!("Map category: {}", ctx.map.category));
 

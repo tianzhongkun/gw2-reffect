@@ -40,6 +40,7 @@ typedef struct RfCombatant {
     float health_max;
     float barrier_current;
     float barrier_max;
+    uint8_t health_state;    /* 0 alive, 1 downed, 2 dead, 255 unknown */
     uint8_t defiance;        /* 0 none, 1 immune, 2 active, 3 recover */
     float defiance_percent;
 } RfCombatant;
@@ -153,6 +154,30 @@ typedef struct RfSnapshot {
 
     /* Target. */
     uint8_t target_valid;
+
+    /* Target classification. Both are bit sets, 0 when unknown.
+     *
+     * target_affinity (disposition):
+     *   1 << 0 friendly, 1 << 1 hostile, 1 << 2 neutral
+     *
+     * target_category (four independent axes; at most one flag per axis is set,
+     * and an axis the reader could not resolve contributes no flag):
+     *   kind:   1 << 0  player          1 << 1  pet
+     *           1 << 2  npc             1 << 3  monster
+     *           1 << 4  gatherable      1 << 5  chest
+     *           1 << 6  gadget
+     *   affin.: 1 << 7  friendly        1 << 8  neutral
+     *           1 << 9  hostile
+     *   rank:   1 << 10 ambient         1 << 11 normal
+     *           1 << 12 veteran         1 << 13 elite
+     *           1 << 14 champion        1 << 15 legendary
+     *           1 << 16 epic
+     *   node:   1 << 17 ore             1 << 18 wood
+     *           1 << 19 plant
+     */
+    uint8_t target_affinity;
+    uint32_t target_category;
+
     RfCombatant target;
     uint32_t target_buff_count;
     RfBuff target_buffs[RF_MAX_BUFFS];

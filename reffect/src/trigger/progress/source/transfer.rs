@@ -37,6 +37,7 @@ impl From<ProgressSource> for Transfer {
             ProgressSource::Inherit
             | ProgressSource::Always
             | ProgressSource::SkillbarSlot { .. }
+            | ProgressSource::TargetCategory { .. }
             | ProgressSource::HealthReduction
             | ProgressSource::Endurance
             | ProgressSource::PrimaryResource
@@ -66,6 +67,7 @@ impl Transfer {
             ProgressSource::Inherit
             | ProgressSource::Always
             | ProgressSource::SkillbarSlot { .. }
+            | ProgressSource::TargetCategory { .. }
             | ProgressSource::HealthReduction
             | ProgressSource::Endurance
             | ProgressSource::PrimaryResource

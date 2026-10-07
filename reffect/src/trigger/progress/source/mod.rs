@@ -8,13 +8,15 @@ use self::transfer::Transfer;
 use super::ProgressActive;
 use crate::{
     action::Action,
-    context::{Buff, Context, ResourceState, SkillId, SkillInfo, Slot, Update, Updates},
+    context::{Buff, Context, ResourceState, SkillId, SkillInfo, Slot, TargetCategory, Update, Updates},
     enums::check_variant_array,
     error::Error,
     internal::{Interface, Internal},
-    render::{Validation, enum_combo, helper, input_skill_id},
+    render::{Validation, enum_combo, enum_combo_bitflags, helper, input_skill_id},
+    serde::bitflags,
 };
 use const_default::ConstDefault;
+use enumflags2::BitFlags;
 use nexus::{
     gamebind::GameBind,
     imgui::{ComboBoxFlags, InputTextFlags, Ui},
@@ -91,6 +93,14 @@ pub enum ProgressSource {
         combatant: Combatant,
     },
 
+    /// Classification of the current target.
+    #[strum(serialize = "Target Category")]
+    TargetCategory {
+        #[serde(with = "bitflags")]
+        #[cfg_attr(feature = "schema", schemars(with = "bitflags::Schema<TargetCategory>"))]
+        categories: BitFlags<TargetCategory>,
+    },
+
     /// Endurance.
     Endurance,
 
@@ -139,6 +149,9 @@ impl VariantArray for ProgressSource {
         Self::Defiance {
             combatant: Combatant::DEFAULT,
         },
+        Self::TargetCategory {
+            categories: BitFlags::EMPTY,
+        },
         Self::Endurance,
         Self::PrimaryResource,
         Self::SecondaryResource,
@@ -185,6 +198,7 @@ impl ProgressSource {
                 | Combatant::GroupMember3
                 | Combatant::GroupMember4 => Update::GroupResources.flags(),
             },
+            Self::TargetCategory { .. } => Update::TargetResources.flags(),
             Self::HealthReduction
             | Self::Endurance
             | Self::PrimaryResource
@@ -270,6 +284,10 @@ impl ProgressSource {
                     Some(defiance.state()),
                 ))
             }
+            Self::TargetCategory { ref categories } => {
+                let target = ctx.target.category.as_ref().ok()?;
+                TargetCategory::matches(*target, *categories).then(ProgressActive::always)
+            }
             Self::Endurance => {
                 let resources = ctx.player.resources.as_ref().ok()?;
                 ProgressActive::from_resource(&resources.endurance, None)
@@ -326,6 +344,7 @@ impl ProgressSource {
                 Some(ResourceState::HealthAlive),
             ),
             Self::Endurance => ProgressActive::edit_resource(progress, 100.0, None),
+            Self::TargetCategory { .. } => ProgressActive::always(),
             Self::Defiance { .. } => {
                 ProgressActive::edit_resource(progress, 100.0, Some(ResourceState::DefianceActive))
             }
@@ -424,6 +443,20 @@ impl ProgressSource {
             Self::Defiance { combatant } => {
                 let validation = combatant.validate_defiance();
                 changed |= combatant.render_options(ui, validation);
+            }
+            Self::TargetCategory { categories } => {
+                changed |= enum_combo_bitflags(
+                    ui,
+                    "Target Category",
+                    categories,
+                    ComboBoxFlags::HEIGHT_LARGE,
+                );
+                helper(ui, || {
+                    ui.text("Category of the current target");
+                    ui.text("Multiple values of one group match any of them");
+                    ui.text("Groups combine with each other");
+                    ui.text("Requires a readable target classification");
+                });
             }
             _ => {}
         }

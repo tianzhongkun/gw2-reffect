@@ -16,6 +16,7 @@ The following information is available via triggers:
 | Health Reduction   | Current maximum health reduction         | :white_check_mark: | :x:                | :x:                | :x:                |
 | Barrier            | Current health barrier                   | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Defiance           | Current defiance (breakbar)              | :white_check_mark: | :x:                | :white_check_mark: | :white_check_mark: |
+| Target Category    | Category of the current target           | :x:                | :x:                | :white_check_mark: | :x:                |
 | Endurance          | Current endurance                        | :white_check_mark: | :x:                | :x:                | :x:                |
 | Primary Resource   | Current primary profession resource      | :white_check_mark: | :x:                | :x:                | :x:                |
 | Secondary Resource | Current secondary profession resource    | :white_check_mark: | :x:                | :x:                | :x:                |
@@ -49,6 +50,35 @@ The following meta-information is available for abilities:
 
 Accurate values for player and their pet.
 Normalized to percentage for target and group members.
+
+## Target Category
+
+Active while the category of the current target satisfies every selected group.
+Within a group, multiple selections match any of them.
+
+The categories follow the [NPC rank] and disposition rules of the game, which
+are two independent axes:
+
+| Group       | Values                                                                  |
+| ----------- | ----------------------------------------------------------------------- |
+| Kind        | Player, Pet, NPC, Monster, Gatherable, Chest, Object                    |
+| Disposition | Ally (green name), Neutral (yellow name), Hostile (red name)            |
+| Rank        | Ambient, Normal, Veteran, Elite, Champion, Legendary, Epic (world boss) |
+| Node        | Ore (mining), Wood (logging), Plant (harvesting)                        |
+
+`Monster` covers hostile and neutral non-player characters, `NPC` covers the
+remaining ones. The game has no "Boss" rank: what players call a boss is a
+`Champion` (golden portrait border) or an `Epic` world boss. Gathering nodes
+follow the three gathering disciplines, so mining nodes are `Ore`, logging nodes
+are `Wood` and harvesting nodes are `Plant`.
+
+Selecting nothing keeps the trigger inactive.
+
+**Note:** the client fields for disposition, rank and gathering discipline are
+not recovered yet, so a target that cannot be classified leaves the trigger
+inactive instead of guessing. The debug window shows the current classification.
+
+[NPC rank]: https://wiki.guildwars2.com/wiki/NPC_rank
 
 ## Profession Resources
 

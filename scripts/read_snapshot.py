@@ -24,6 +24,7 @@ class RfCombatant(C.Structure):
         ("health_max", C.c_float),
         ("barrier_current", C.c_float),
         ("barrier_max", C.c_float),
+        ("health_state", C.c_uint8),
         ("defiance", C.c_uint8),
         ("defiance_percent", C.c_float),
     ]
@@ -121,6 +122,8 @@ class RfSnapshot(C.Structure):
         ("gear_valid", C.c_uint8),
         ("gear", RfGear),
         ("target_valid", C.c_uint8),
+        ("target_affinity", C.c_uint8),
+        ("target_category", C.c_uint32),
         ("target", RfCombatant),
         ("target_buff_count", C.c_uint32),
         ("target_buffs", RfBuff * 96),

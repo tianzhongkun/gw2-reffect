@@ -1,4 +1,5 @@
 mod affinity;
+mod classification;
 mod combatant;
 mod edit;
 mod group;
@@ -12,8 +13,8 @@ mod ui;
 mod updates;
 
 pub use self::{
-    affinity::*, combatant::*, edit::*, group::*, item::*, map::*, player::*, resource::*,
-    skill::*, target::*, ui::*, updates::*,
+    affinity::*, classification::*, combatant::*, edit::*, group::*, item::*, map::*, player::*,
+    resource::*, skill::*, target::*, ui::*, updates::*,
 };
 
 use crate::{error::Error, links::Links, profiling::measure, worker::StoppableWorker};

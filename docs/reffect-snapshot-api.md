@@ -36,7 +36,12 @@ Structures (sizes as of the current build, little-endian x64):
 | `RfBuild` | 128 |
 | `RfGear` | 24 |
 | `RfGroupMember` | 1568 |
-| `RfSnapshot` | 12368 |
+| `RfSnapshot` | 12372 |
+
+`RfCombatant::health_state` is `0` alive, `1` downed, `2` dead, `255` unknown.
+`RfSnapshot::target_affinity` and `target_category` are bit sets that are `0`
+when the reader could not classify the target; the bit meanings are documented in
+`reffect_snapshot.h`.
 
 ```c
 #include "reffect_snapshot.h"
@@ -66,5 +71,6 @@ for (uint32_t i = 0; i < snap->cooldown_count; ++i) {
 
 ## Checks
 
-`cargo test -p reffect_core --lib snapshot_sizes -- --nocapture` prints the Rust
-sizes; compare against `python -c "import ctypes; ..."` on `scripts/read_snapshot.py`.
+`cargo test -p reffect_core --lib snapshot_ -- --nocapture` asserts the struct
+sizes and the offsets of the target classification fields. Compare against
+`python -c "import ctypes; ..."` on `scripts/read_snapshot.py`.

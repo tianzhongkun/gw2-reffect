@@ -45,6 +45,7 @@ impl AbilityInfoTrigger {
             | ProgressSource::HealthReduction
             | ProgressSource::Barrier { .. }
             | ProgressSource::Defiance { .. }
+            | ProgressSource::TargetCategory { .. }
             | ProgressSource::Endurance
             | ProgressSource::PrimaryResource
             | ProgressSource::SecondaryResource
