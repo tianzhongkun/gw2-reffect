@@ -6,6 +6,23 @@ pub type Color = [f32; 4];
 pub trait Colored {
     /// Returns the color.
     fn colored(&self) -> Option<Color>;
+
+    /// Pushes the color as a style color.
+    #[inline]
+    fn push_style_color<'ui>(
+        &self,
+        ui: &'ui Ui,
+        style: StyleColor,
+    ) -> Option<ColorStackToken<'ui>> {
+        self.colored()
+            .map(|color| ui.push_style_color(style, color))
+    }
+
+    /// Pushes the color as text color.
+    #[inline]
+    fn push_text_color<'ui>(&self, ui: &'ui Ui) -> Option<ColorStackToken<'ui>> {
+        self.push_style_color(ui, StyleColor::Text)
+    }
 }
 
 /// Creates a color from RGB values.
@@ -61,6 +78,8 @@ mod common {
     pub const BLUE: Color = rgb(0.0, 1.0, 0.0);
 
     pub const YELLOW: Color = rgb(1.0, 1.0, 0.0);
+
+    pub const ORANGE: Color = rgb(1.0, 0.5, 0.0);
 
     pub const CYAN: Color = rgb(0.0, 1.0, 1.0);
 
@@ -142,5 +161,9 @@ mod mount {
 
     pub const SIEGE_TURTLE: Color = rgb(0.00, 0.67, 0.30);
 }
+
+use nexus::imgui::{ColorStackToken, StyleColor};
+
+use crate::Ui;
 
 pub use self::{common::*, expansion::*, mount::*, profession::*};

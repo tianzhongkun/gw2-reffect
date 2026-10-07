@@ -9,8 +9,8 @@
 //! flag (`*_valid`, `count`, `has_*`) rather than relying on sentinel values.
 
 use crate::context::{
-    Ability, ActiveCooldown, Buff, Build, CombatantResources, Context, Defiance, Gear,
-    PlayerResources, Profession, Resource, SkillId, Slot,
+    Ability, ActiveCooldown, Buff, Build, CombatantResources, Context, Defiance, Gear, PlayerHealth,
+    PlayerResources, Profession, Resource, ResourceState, SkillId, Slot,
 };
 use strum::IntoEnumIterator;
 
@@ -41,6 +41,8 @@ pub struct RfCombatant {
     pub health_max: f32,
     pub barrier_current: f32,
     pub barrier_max: f32,
+    /// 0 alive, 1 downed, 2 dead, 255 unknown.
+    pub health_state: u8,
     /// 0 none, 1 immune, 2 active, 3 recover.
     pub defiance: u8,
     pub defiance_percent: f32,
@@ -207,9 +209,11 @@ pub fn fill_snapshot(out: &mut RfSnapshot, ctx: &Context) {
     out.spec = ctx.player.spec.ok().map(|spec| spec as u32).unwrap_or(0);
     out.mount = ctx.player.mount.ok().map(|mount| mount as u8).unwrap_or(0);
 
-    if let Ok(resources) = &ctx.player.resources {
+    let health = ctx.player.health.as_ref().ok();
+    let resources = ctx.player.resources.as_ref().ok();
+    if health.is_some() || resources.is_some() {
         out.resources_valid = 1;
-        fill_resources(&mut out.resources, resources);
+        fill_resources(&mut out.resources, health, resources);
     }
     if let Ok(buff_info) = &ctx.player.buff_info {
         out.buff_count = fill_buffs(&mut out.buffs, &buff_info.buffs, ctx.now);
@@ -264,16 +268,24 @@ pub fn fill_snapshot(out: &mut RfSnapshot, ctx: &Context) {
     }
 }
 
-fn fill_resources(out: &mut RfResources, resources: &PlayerResources) {
-    fill_combatant(&mut out.combatant, &resources.combatant);
-    out.health_reduction = resource(&resources.health_reduction);
-    out.endurance = resource(&resources.endurance);
-    out.primary = resource(&resources.primary);
-    out.secondary = resource(&resources.secondary);
-    out.rate = resource(&resources.rate);
-    if let Some(pet) = &resources.pet {
-        out.has_pet = 1;
-        fill_combatant(&mut out.pet, pet);
+fn fill_resources(
+    out: &mut RfResources,
+    health: Option<&PlayerHealth>,
+    resources: Option<&PlayerResources>,
+) {
+    if let Some(health) = health {
+        fill_combatant(&mut out.combatant, &health.combatant);
+        out.health_reduction = resource(&health.health_reduction);
+    }
+    if let Some(resources) = resources {
+        out.endurance = resource(&resources.endurance);
+        out.primary = resource(&resources.primary);
+        out.secondary = resource(&resources.secondary);
+        out.rate = resource(&resources.rate);
+        if let Some(pet) = &resources.pet {
+            out.has_pet = 1;
+            fill_combatant(&mut out.pet, pet);
+        }
     }
 }
 
@@ -282,13 +294,32 @@ fn fill_combatant(out: &mut RfCombatant, combatant: &CombatantResources) {
     out.health_max = combatant.health.max;
     out.barrier_current = combatant.barrier.current;
     out.barrier_max = combatant.barrier.max;
+    out.health_state = health_state_code(combatant.health_state);
     out.defiance = match combatant.defiance {
-        Defiance::None => 0,
-        Defiance::Immune => 1,
-        Defiance::Active(_) => 2,
-        Defiance::Recover(_) => 3,
+        None => 0,
+        Some(Defiance::Immune) => 1,
+        Some(Defiance::Active(_)) => 2,
+        Some(Defiance::Recover(_)) => 3,
     };
-    out.defiance_percent = combatant.defiance.percent().unwrap_or(0.0);
+    out.defiance_percent = combatant
+        .defiance
+        .as_ref()
+        .map(Defiance::percent)
+        .unwrap_or(0.0);
+}
+
+/// Encodes a [`ResourceState`] health state for the C ABI: 0 alive, 1 downed,
+/// 2 dead, 255 unknown.
+fn health_state_code(state: ResourceState) -> u8 {
+    if state == ResourceState::HealthDowned {
+        1
+    } else if state == ResourceState::HealthDead {
+        2
+    } else if state == ResourceState::HealthAlive {
+        0
+    } else {
+        255
+    }
 }
 
 fn resource(resource: &Resource) -> RfResource {

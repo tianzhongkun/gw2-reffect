@@ -4,10 +4,11 @@ use crate::{
     colors::{self, Colored},
     context::{
         Ability, AbilityInfo, BuffMap, Build, CombatantResources, Context, Defiance, Gear,
-        PlayerResources, SkillId, SkillInfo, Skillbar, Slot,
+        PlayerHealth, PlayerResources, SkillId, SkillInfo, Skillbar, Slot,
     },
     error::Error,
     internal::{Interface, Internal},
+    named::Named,
 };
 use nexus::imgui::{StyleColor, TreeNode, TreeNodeFlags, Ui, Window};
 use std::{
@@ -46,6 +47,16 @@ impl Addon {
                 ui.same_line();
                 name_or_unknown_id_colored(ui, ctx.player.mount);
 
+                ui.text("Target affinity:");
+                ui.same_line();
+                match &ctx.target.affinity {
+                    Ok(affinity) => {
+                        let _color = affinity.push_text_color(ui);
+                        ui.text(affinity)
+                    }
+                    Err(err) => ui.text_colored(colors::RED, err.to_string()),
+                }
+
                 ui.text(format!("Map id: {}", ctx.map.id));
                 ui.text(format!("Map category: {}", ctx.map.category));
 
@@ -70,6 +81,7 @@ impl Addon {
                     }
                     ui.unindent();
                 });
+
                 debug_result_tree(ui, "plbuild", "Player build", &ctx.player.build, |build| {
                     let Build {
                         specs,
@@ -110,9 +122,7 @@ impl Addon {
                     ui.text("Profession selections:");
                     ui.indent();
                     for info in prof_selections.iter() {
-                        let _color = info
-                            .colored()
-                            .map(|color| ui.push_style_color(StyleColor::Text, color));
+                        let _color = info.push_text_color(ui);
                         ui.text(info);
                         ui.same_line();
                     }
@@ -122,13 +132,38 @@ impl Addon {
                     let [pet1, pet2] = pets;
                     ui.text(format!("Pets: {pet1} {pet2}"));
                 });
+
+                debug_result_tree(ui, "plhp", "Player health", &ctx.player.health, |health| {
+                    let PlayerHealth {
+                        combatant,
+                        health_reduction,
+                    } = health;
+
+                    debug_combatant_resources(ui, combatant, false);
+                    ui.text(format!("Health reduction: {health_reduction}"));
+                });
+
                 debug_result_tree(
                     ui,
                     "plres",
                     "Player resources",
                     &ctx.player.resources,
-                    |resources| debug_player_resources(ui, resources),
+                    |resources| {
+                        let PlayerResources {
+                            pet: _,
+                            endurance,
+                            primary,
+                            secondary,
+                            rate,
+                        } = resources;
+
+                        ui.text(format!("Endurance: {endurance}",));
+                        ui.text(format!("Primary: {primary}"));
+                        ui.text(format!("Secondary: {secondary}"));
+                        ui.text(format!("Rate: {rate}"));
+                    },
                 );
+
                 debug_result_tree(
                     ui,
                     "plbuffs",
@@ -148,6 +183,7 @@ impl Addon {
                         debug_buffs(ui, ctx, &buff_info.buffs)
                     },
                 );
+
                 debug_result_tree(
                     ui,
                     "plskills",
@@ -155,6 +191,7 @@ impl Addon {
                     &ctx.player.skillbar,
                     |skillbar| debug_skillbar(ui, ctx, skillbar),
                 );
+
                 debug_result_tree(
                     ui,
                     "plcd",
@@ -216,6 +253,7 @@ impl Addon {
                     &ctx.target.resources,
                     |resources| debug_combatant_resources(ui, resources, true),
                 );
+
                 debug_result_tree(ui, "tgbuff", "Target buffs", &ctx.target.buffs, |buffs| {
                     debug_buffs(ui, ctx, buffs)
                 });
@@ -266,40 +304,22 @@ fn debug_combatant_resources(ui: &Ui, resources: &CombatantResources, normalized
         health,
         barrier,
         defiance,
+        health_state,
     } = resources;
 
     let precision = if normalized { 1 } else { 0 };
+    ui.text(format!("State: {}", health_state.short_name()));
     ui.text(format!("Health: {health:.*}", precision));
     ui.text(format!("Barrier: {barrier:.*}", precision));
 
     ui.text("Defiance:");
     ui.same_line();
     match defiance {
-        Defiance::None => ui.text("-"),
-        Defiance::Immune => ui.text("immune"),
-        Defiance::Active(percent) => ui.text(format!("active {percent:.1}%")),
-        Defiance::Recover(percent) => ui.text(format!("recover {percent:.1}%")),
+        None => ui.text("-"),
+        Some(Defiance::Immune) => ui.text("immune"),
+        Some(Defiance::Active(percent)) => ui.text(format!("active {percent:.1}%")),
+        Some(Defiance::Recover(percent)) => ui.text(format!("recover {percent:.1}%")),
     }
-}
-
-fn debug_player_resources(ui: &Ui, resources: &PlayerResources) {
-    let PlayerResources {
-        combatant,
-        health_reduction,
-        pet: _,
-        endurance,
-        primary,
-        secondary,
-        rate,
-    } = resources;
-
-    debug_combatant_resources(ui, combatant, false);
-
-    ui.text(format!("Health reduction: {health_reduction}"));
-    ui.text(format!("Endurance: {endurance}",));
-    ui.text(format!("Primary: {primary}"));
-    ui.text(format!("Secondary: {secondary}"));
-    ui.text(format!("Rate: {rate}"));
 }
 
 fn debug_buffs(ui: &Ui, ctx: &Context, buffs: &BuffMap) {
@@ -441,9 +461,7 @@ where
 {
     match value {
         Ok(value) => {
-            let _color = value
-                .colored()
-                .map(|color| ui.push_style_color(StyleColor::Text, color));
+            let _color = value.push_text_color(ui);
             ui.text(value);
         }
         Err(id) => ui.text(format!("Unknown ({id})")),

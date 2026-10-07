@@ -14,9 +14,9 @@ use nexus::rtapi::{GroupType as RtapiGroupType, RealTimeApi};
 use reffect_core::{
     context::{
         Ability, AbilityInfo, ActiveCooldown, Buff, BuffMap, Build, CombatantResources, Context,
-        Defiance, Gear, GroupInfo, GroupMember, GroupType, PlayerBuffInfo, PlayerResources,
-        ProfSelection, Profession, Race, Resource, SkillId, Skillbar, Slot, Specialization, Update,
-        Weapon,
+        Defiance, Gear, GroupInfo, GroupMember, GroupType, PlayerBuffInfo, PlayerHealth,
+        PlayerResources, ProfSelection, Profession, Race, Resource, ResourceState, SkillId, Skillbar,
+        Slot, Specialization, Update, Weapon,
     },
     error::Error,
 };
@@ -482,7 +482,7 @@ struct RuntimeSnapshot {
     race: Option<u8>,
     profession: Option<u8>,
     specialization: Option<u32>,
-    resources: Option<PlayerResources>,
+    resources: Option<PlayerResourceSnapshot>,
     buffs: Option<PlayerBuffInfo>,
     build: Option<Build>,
     gear: Option<GearSnapshot>,
@@ -490,6 +490,15 @@ struct RuntimeSnapshot {
     active_cooldowns: Option<Vec<ActiveCooldown>>,
     target: Option<TargetSnapshot>,
     group: Option<GroupInfo>,
+}
+
+/// Player health and profession resources. The public context keeps these in
+/// separate fields ([`PlayerInfo::health`] and [`PlayerInfo::resources`]), so
+/// the reader returns them together and the publisher splits them.
+#[derive(Debug, Clone)]
+struct PlayerResourceSnapshot {
+    health: PlayerHealth,
+    resources: PlayerResources,
 }
 
 /// Skillbar plus the cooldowns the game is tracking that are not anchored to a
@@ -635,7 +644,16 @@ impl RuntimeSnapshot {
             context.updates.insert(Update::PlayerIdentity);
         }
 
-        context.player.resources = self.resources.ok_or(Error::Health);
+        match self.resources {
+            Some(resources) => {
+                context.player.health = Ok(resources.health);
+                context.player.resources = Ok(resources.resources);
+            }
+            None => {
+                context.player.health = Err(Error::Health);
+                context.player.resources = Err(Error::Profession);
+            }
+        }
         // Player buffs are filtered at read time by the effect's definition
         // pointer (see `read_buffs_at`), matching the original decoder, so the
         // buff map is published as-is.
@@ -837,7 +855,7 @@ fn read_identity(game: &impl GameMemory, character: usize) -> (Option<u8>, Optio
 }
 
 #[cfg(test)]
-fn read_player_resources(game: &impl GameMemory, character: usize) -> Option<PlayerResources> {
+fn read_player_resources(game: &impl GameMemory, character: usize) -> Option<PlayerResourceSnapshot> {
     read_player_resources_at(game, character, tick_count())
 }
 
@@ -846,7 +864,7 @@ fn read_player_resources_at(
     game: &impl GameMemory,
     character: usize,
     now: u32,
-) -> Option<PlayerResources> {
+) -> Option<PlayerResourceSnapshot> {
     read_player_resources_for_profession_at(
         game,
         character,
@@ -862,7 +880,7 @@ fn read_player_resources_for_profession_at(
     profession: Option<u8>,
     specialization: Option<u32>,
     now: u32,
-) -> Option<PlayerResources> {
+) -> Option<PlayerResourceSnapshot> {
     let combatant = read_combatant_resources(game, character, now)?;
     let pet =
         owned_pet_character(game, character).and_then(|pet| read_combatant_resources(game, pet, now));
@@ -957,14 +975,18 @@ fn read_player_resources_for_profession_at(
         combatant.health.max,
     );
 
-    Some(PlayerResources {
-        combatant,
-        health_reduction,
-        pet,
-        endurance,
-        primary,
-        secondary,
-        rate,
+    Some(PlayerResourceSnapshot {
+        health: PlayerHealth {
+            combatant,
+            health_reduction,
+        },
+        resources: PlayerResources {
+            pet,
+            endurance,
+            primary,
+            secondary,
+            rate,
+        },
     })
 }
 
@@ -1235,7 +1257,7 @@ fn read_resources_from_health(
     barrier_layout: BarrierLayout,
     normalize: bool,
     now: u32,
-    defiance: Defiance,
+    defiance: Option<Defiance>,
 ) -> Option<CombatantResources> {
     let base_current = value_at::<f32>(game, health, HEALTH_CURRENT)?;
     let max = value_at::<f32>(game, health, HEALTH_MAX)?;
@@ -1267,7 +1289,16 @@ fn read_resources_from_health(
         .filter(|barrier| *barrier <= max * 1.25)
         .unwrap_or(0.0);
     Some(CombatantResources::new(
-        normalize, current, barrier, max, defiance,
+        normalize,
+        // TODO(health-state): the client field that distinguishes alive/downed/
+        // dead is not part of the recovered 0.13.1 read graph, so every combatant
+        // is published as alive for now. Tracked with the target classification
+        // work; see docs/superpowers/plans.
+        ResourceState::HealthAlive,
+        current,
+        barrier,
+        max,
+        defiance,
     ))
 }
 
@@ -1297,36 +1328,32 @@ fn owned_pet_character(game: &impl GameMemory, character: usize) -> Option<usize
         .filter(|pet| is_owned_companion_address(character, *pet))
 }
 
-fn read_defiance(game: &impl GameMemory, character: usize) -> Defiance {
+/// Reads the defiance bar. `None` means the combatant has no readable defiance
+/// bar, which the public context represents as `Option<Defiance>`.
+fn read_defiance(game: &impl GameMemory, character: usize) -> Option<Defiance> {
     read_defiance_at(game, pointer_at(game, character, CHARACTER_DEFIANCE))
 }
 
 /// Reads the defiance bar from an already resolved defiance object; target kinds
 /// that keep it off the character pass that object directly.
-fn read_defiance_at(game: &impl GameMemory, defiance: Option<usize>) -> Defiance {
-    let Some(defiance) = defiance else {
-        return Defiance::None;
-    };
-    let Some(state) = value_at::<u32>(game, defiance, DEFIANCE_STATE) else {
-        return Defiance::None;
-    };
-    let Some(mut value) = value_at::<f32>(game, defiance, DEFIANCE_VALUE) else {
-        return Defiance::None;
-    };
+fn read_defiance_at(game: &impl GameMemory, defiance: Option<usize>) -> Option<Defiance> {
+    let defiance = defiance?;
+    let state = value_at::<u32>(game, defiance, DEFIANCE_STATE)?;
+    let mut value = value_at::<f32>(game, defiance, DEFIANCE_VALUE)?;
     if !value.is_finite() || value < 0.0 {
-        return Defiance::None;
+        return None;
     }
     if value <= 1.5 {
         value *= 100.0;
     }
     if value > 100.0 {
-        return Defiance::None;
+        return None;
     }
     match state {
-        0 => Defiance::Active(value),
-        1 => Defiance::Recover(value),
-        2 => Defiance::Immune,
-        _ => Defiance::None,
+        0 => Some(Defiance::Active(value)),
+        1 => Some(Defiance::Recover(value)),
+        2 => Some(Defiance::Immune),
+        _ => None,
     }
 }
 
@@ -2741,11 +2768,15 @@ fn read_target(
         None => {
             // Health unreadable: still publish the target with a full normalized
             // bar and its real defiance, matching the original's placeholder.
-            let defiance = match defiance {
-                Defiance::None => Defiance::Active(100.0),
-                other => other,
-            };
-            Ok(CombatantResources::new(true, 1.0, 0.0, 1.0, defiance))
+            let defiance = Some(defiance.unwrap_or(Defiance::Active(100.0)));
+            Ok(CombatantResources::new(
+                true,
+                ResourceState::HealthAlive,
+                1.0,
+                0.0,
+                1.0,
+                defiance,
+            ))
         }
     };
     let buffs = container
@@ -3308,7 +3339,10 @@ mod tests {
             race: None,
             profession: None,
             specialization: None,
-            resources: Some(PlayerResources::empty()),
+            resources: Some(PlayerResourceSnapshot {
+                health: PlayerHealth::empty(),
+                resources: PlayerResources::empty(),
+            }),
             buffs: None,
             build: None,
             gear: None,
@@ -3353,7 +3387,7 @@ mod tests {
         let snapshot =
             decode_snapshot(&memory, 0x20_000, character, &mut BuffSnapshotCache::default())
                 .expect("valid thief snapshot");
-        let primary = snapshot.resources.expect("player resources").primary;
+        let primary = snapshot.resources.expect("player resources").resources.primary;
 
         assert_eq!(snapshot.profession, Some(5));
         assert_eq!(primary.current, 12.0);
@@ -3386,8 +3420,8 @@ mod tests {
         let resources = read_player_resources_for_profession_at(&memory, character, Some(5), None, 1_500)
             .expect("valid thief resources");
 
-        assert_eq!(resources.primary.current, 11.0);
-        assert_eq!(resources.primary.max, 15.0);
+        assert_eq!(resources.resources.primary.current, 11.0);
+        assert_eq!(resources.resources.primary.max, 15.0);
     }
 
     #[test]
@@ -3409,10 +3443,10 @@ mod tests {
         let resources = read_player_resources_for_profession_at(&memory, character, Some(9), None, 1_500)
             .expect("valid revenant resources");
 
-        assert_eq!(resources.primary.current, 31.0);
-        assert_eq!(resources.primary.max, 50.0);
-        assert_eq!(resources.rate.current, 7.0);
-        assert_eq!(resources.rate.max, 10.0);
+        assert_eq!(resources.resources.primary.current, 31.0);
+        assert_eq!(resources.resources.primary.max, 50.0);
+        assert_eq!(resources.resources.rate.current, 7.0);
+        assert_eq!(resources.resources.rate.max, 10.0);
     }
 
     #[test]
@@ -3432,8 +3466,8 @@ mod tests {
         let resources = read_player_resources_for_profession_at(&memory, character, Some(2), None, 1_500)
             .expect("valid warrior resources");
 
-        assert_eq!(resources.primary.current, 15.0);
-        assert_eq!(resources.primary.max, 30.0);
+        assert_eq!(resources.resources.primary.current, 15.0);
+        assert_eq!(resources.resources.primary.max, 30.0);
     }
 
     #[test]
@@ -3453,8 +3487,8 @@ mod tests {
         let resources = read_player_resources_for_profession_at(&memory, character, Some(7), None, 1_500)
             .expect("valid mesmer resources");
 
-        assert_eq!(resources.primary.current, 3.0);
-        assert_eq!(resources.primary.max, 5.0);
+        assert_eq!(resources.resources.primary.current, 3.0);
+        assert_eq!(resources.resources.primary.max, 5.0);
     }
 
     #[test]
@@ -3474,8 +3508,8 @@ mod tests {
         let resources = read_player_resources_for_profession_at(&memory, character, Some(8), None, 1_500)
             .expect("valid necromancer resources");
 
-        assert_eq!(resources.primary.current, 4.0);
-        assert_eq!(resources.primary.max, 6.0);
+        assert_eq!(resources.resources.primary.current, 4.0);
+        assert_eq!(resources.resources.primary.max, 6.0);
     }
 
     #[test]
@@ -3499,8 +3533,8 @@ mod tests {
         let resources = read_player_resources_for_profession_at(&memory, character, Some(8), None, 1_500)
             .expect("necro life force with a five-figure max must be published");
 
-        assert_eq!(resources.primary.current, 12_072.0);
-        assert_eq!(resources.primary.max, 19_228.0);
+        assert_eq!(resources.resources.primary.current, 12_072.0);
+        assert_eq!(resources.resources.primary.max, 19_228.0);
     }
 
     #[test]
@@ -3531,10 +3565,10 @@ mod tests {
         )
         .expect("valid elementalist resources");
 
-        assert_eq!(resources.primary.current, 4.0);
-        assert_eq!(resources.primary.max, 6.0);
-        assert_eq!(resources.secondary.current, 0.0);
-        assert_eq!(resources.secondary.max, 3.0);
+        assert_eq!(resources.resources.primary.current, 4.0);
+        assert_eq!(resources.resources.primary.max, 6.0);
+        assert_eq!(resources.resources.secondary.current, 0.0);
+        assert_eq!(resources.resources.secondary.max, 3.0);
     }
 
     #[test]
@@ -3560,9 +3594,9 @@ mod tests {
         )
         .expect("valid elementalist resources");
 
-        assert_eq!(resources.primary.current, 7.0);
-        assert_eq!(resources.primary.max, 10.0);
-        assert!(resources.secondary.max == 0.0 || resources.secondary.current == 0.0);
+        assert_eq!(resources.resources.primary.current, 7.0);
+        assert_eq!(resources.resources.primary.max, 10.0);
+        assert!(resources.resources.secondary.max == 0.0 || resources.resources.secondary.current == 0.0);
     }
 
     #[test]
@@ -3603,10 +3637,10 @@ mod tests {
         )
         .expect("valid elementalist resources");
 
-        assert_eq!(resources.primary.current, 0.0);
-        assert_eq!(resources.primary.max, 6.0);
-        assert_eq!(resources.secondary.current, 1.0);
-        assert_eq!(resources.secondary.max, 3.0);
+        assert_eq!(resources.resources.primary.current, 0.0);
+        assert_eq!(resources.resources.primary.max, 6.0);
+        assert_eq!(resources.resources.secondary.current, 1.0);
+        assert_eq!(resources.resources.secondary.max, 3.0);
     }
 
     #[test]
@@ -3632,8 +3666,8 @@ mod tests {
         )
         .expect("valid guardian resources");
 
-        assert_eq!(resources.primary.current, 2.0);
-        assert_eq!(resources.primary.max, 3.0);
+        assert_eq!(resources.resources.primary.current, 2.0);
+        assert_eq!(resources.resources.primary.max, 3.0);
     }
 
     #[test]
@@ -3671,10 +3705,10 @@ mod tests {
         )
         .expect("valid warrior resources");
 
-        assert_eq!(resources.primary.current, 20.0);
-        assert_eq!(resources.primary.max, 30.0);
-        assert_eq!(resources.secondary.current, 1.0);
-        assert_eq!(resources.secondary.max, WARRIOR_BERSERKER_MAX);
+        assert_eq!(resources.resources.primary.current, 20.0);
+        assert_eq!(resources.resources.primary.max, 30.0);
+        assert_eq!(resources.resources.secondary.current, 1.0);
+        assert_eq!(resources.resources.secondary.max, WARRIOR_BERSERKER_MAX);
     }
 
     #[test]
@@ -3702,10 +3736,10 @@ mod tests {
         )
         .expect("valid necromancer resources");
 
-        assert_eq!(resources.primary.current, 1463.0);
-        assert_eq!(resources.primary.max, 19228.0);
-        assert_eq!(resources.secondary.current, 3.0);
-        assert_eq!(resources.secondary.max, 10.0);
+        assert_eq!(resources.resources.primary.current, 1463.0);
+        assert_eq!(resources.resources.primary.max, 19228.0);
+        assert_eq!(resources.resources.secondary.current, 3.0);
+        assert_eq!(resources.resources.secondary.max, 10.0);
     }
 
     #[test]
@@ -3745,8 +3779,8 @@ mod tests {
         )
         .expect("valid revenant resources");
 
-        assert_eq!(resources.secondary.current, 1.0);
-        assert_eq!(resources.secondary.max, 5.0);
+        assert_eq!(resources.resources.secondary.current, 1.0);
+        assert_eq!(resources.resources.secondary.max, 5.0);
     }
 
     #[test]
@@ -3762,10 +3796,10 @@ mod tests {
 
         let resources = read_player_resources(&memory, character).expect("valid player resources");
 
-        assert_eq!(resources.combatant.health.current, 80.0);
-        assert_eq!(resources.combatant.health.max, 100.0);
-        assert_eq!(resources.health_reduction.current, 20.0);
-        assert_eq!(resources.health_reduction.max, 100.0);
+        assert_eq!(resources.health.combatant.health.current, 80.0);
+        assert_eq!(resources.health.combatant.health.max, 100.0);
+        assert_eq!(resources.health.health_reduction.current, 20.0);
+        assert_eq!(resources.health.health_reduction.max, 100.0);
     }
 
     #[test]
@@ -3787,8 +3821,8 @@ mod tests {
                 .expect("valid player resources");
 
         // now(1500) - tick(1000) = 0.5s * rate(10) = +5.0 -> 85.0
-        assert_eq!(resources.combatant.health.current, 85.0);
-        assert_eq!(resources.combatant.health.max, 100.0);
+        assert_eq!(resources.health.combatant.health.current, 85.0);
+        assert_eq!(resources.health.combatant.health.max, 100.0);
     }
 
     #[test]
@@ -3837,7 +3871,7 @@ mod tests {
         let snapshot =
             decode_snapshot(&memory, 0x20_000, character, &mut BuffSnapshotCache::default())
                 .expect("valid thief snapshot");
-        let primary = snapshot.resources.expect("player resources").primary;
+        let primary = snapshot.resources.expect("player resources").resources.primary;
 
         assert_eq!(primary.current, 0.0);
         assert_eq!(primary.max, 0.0);
@@ -3862,8 +3896,8 @@ mod tests {
         let resources =
             read_player_resources_at(&memory, character, 1_500).expect("valid player resources");
 
-        assert_eq!(resources.primary.current, 11.0);
-        assert_eq!(resources.primary.max, 15.0);
+        assert_eq!(resources.resources.primary.current, 11.0);
+        assert_eq!(resources.resources.primary.max, 15.0);
     }
 
     #[test]

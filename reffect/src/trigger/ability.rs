@@ -1,10 +1,9 @@
-use super::ProgressActive;
+use super::{ProgressActive, ProgressSource, TriggerMode};
 use crate::{
     context::AbilityInfo,
     named::Named,
-    render::{enum_combo_bitflags, helper},
+    render::{Validation, enum_combo_bitflags, helper},
     serde::bitflags,
-    trigger::TriggerMode,
 };
 use const_default::ConstDefault;
 use enumflags2::{BitFlags, make_bitflags};
@@ -30,8 +29,29 @@ pub struct AbilityInfoTrigger {
 }
 
 impl AbilityInfoTrigger {
-    pub fn is_present(&self, active: &ProgressActive) -> bool {
+    pub fn is_active(&self, active: &ProgressActive) -> bool {
         self.mode.check_flags(self.infos, active.ability_info())
+    }
+
+    pub fn validate(source: &ProgressSource) -> Validation<&'static str> {
+        match source {
+            ProgressSource::Ability { .. } | ProgressSource::SkillbarSlot { .. } => Validation::Ok,
+            ProgressSource::Inherit => {
+                Validation::Warn("Inherited trigger source must be ability-like")
+            }
+            ProgressSource::Always
+            | ProgressSource::Buff { .. }
+            | ProgressSource::Health { .. }
+            | ProgressSource::HealthReduction
+            | ProgressSource::Barrier { .. }
+            | ProgressSource::Defiance { .. }
+            | ProgressSource::Endurance
+            | ProgressSource::PrimaryResource
+            | ProgressSource::SecondaryResource
+            | ProgressSource::ResourceRate => {
+                Validation::Error("Condition requires an ability-like trigger source")
+            }
+        }
     }
 
     pub fn render_options(&mut self, ui: &Ui) -> bool {
@@ -40,8 +60,13 @@ impl AbilityInfoTrigger {
         changed |= enum_combo_bitflags(ui, "Info", &mut self.infos, ComboBoxFlags::empty());
         helper(ui, || {
             ui.text("Auto Attack: ability is set to auto-attack");
+            ui.text("Pending: ability is queued or casting");
             ui.text("Pressed: ability is pressed");
-            ui.text("Pending: ability is casting or queued");
+            ui.text("Active: ability is passively active");
+            ui.text("No Resources: missing resources to activate");
+            ui.text("No Range: out of ability range");
+            ui.text("Ground Targeted: ability uses ground targeting");
+            ui.text("Ignore Recharge: ability can be activated while recharging");
         });
 
         changed |= self.mode.render_options(ui, "Mode");
@@ -70,6 +95,6 @@ impl fmt::Display for AbilityInfoTrigger {
         } else {
             "...".into()
         };
-        write!(f, "Is {} {infos}", self.mode.as_ref())
+        write!(f, "Ability is {} {infos}", self.mode.as_ref())
     }
 }
