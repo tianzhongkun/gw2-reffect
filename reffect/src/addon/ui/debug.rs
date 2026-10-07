@@ -18,7 +18,7 @@ use strum::IntoEnumIterator;
 
 impl Addon {
     pub fn render_debug(&mut self, ui: &Ui, ctx: &Context) {
-        Window::new("Reffect Debug")
+        Window::new("Reffect Open 调试##reffect-open-debug")
             .collapsible(false)
             .always_auto_resize(true)
             .opened(&mut self.debug)
@@ -154,6 +154,46 @@ impl Addon {
                     "Player skillbar",
                     &ctx.player.skillbar,
                     |skillbar| debug_skillbar(ui, ctx, skillbar),
+                );
+                debug_result_tree(
+                    ui,
+                    "plcd",
+                    "Off-bar cooldowns",
+                    &ctx.player.active_cooldowns,
+                    |cooldowns| {
+                        let offbar: Vec<_> = cooldowns.iter().filter(|cd| cd.slot.is_none()).collect();
+                        if offbar.is_empty() {
+                            ui.text("(none)");
+                            return;
+                        }
+                        for cd in offbar {
+                            let label = match cd.skill {
+                                SkillId::Id(id) => format!("{id: >5}"),
+                                other => other.to_string(),
+                            };
+                            // Prefer the single recharge; ammo-only skills keep
+                            // their cooldown on the ammo fields.
+                            let (remaining, total) = if cd.recharge > 0 {
+                                (cd.recharge_remaining(ctx.now), cd.recharge)
+                            } else if cd.ammo_recharge > 0 {
+                                (cd.ammo_recharge_remaining(ctx.now), cd.ammo_recharge)
+                            } else {
+                                (0, 0)
+                            };
+                            if total > 0 {
+                                let percent =
+                                    (100.0 * remaining as f32 / total as f32).clamp(0.0, 100.0);
+                                ui.text(format!(
+                                    "{label} {:.1}/{:.1}s {:.1}%",
+                                    to_secs(remaining),
+                                    to_secs(total),
+                                    percent,
+                                ));
+                            } else {
+                                ui.text(label);
+                            }
+                        }
+                    },
                 );
                 debug_result_tree(
                     ui,

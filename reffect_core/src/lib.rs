@@ -15,6 +15,7 @@ pub mod metadata;
 pub mod named;
 pub mod profiling;
 pub mod serde;
+pub mod snapshot;
 pub mod util;
 pub mod worker;
 

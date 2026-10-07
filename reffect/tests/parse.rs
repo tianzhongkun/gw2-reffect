@@ -1,4 +1,4 @@
-use reffect::{
+use reffect_open::{
     elements::{Element, ElementType},
     schema::Schema,
     trigger::{Combatant, ProgressSource},

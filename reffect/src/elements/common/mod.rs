@@ -119,7 +119,7 @@ impl Common {
         let window_pos = min;
         let window_size = max.sub(window_pos);
         let _style = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
-        Window::new("##reffect-edit")
+        Window::new("##reffect-open-edit")
             .position(
                 window_pos,
                 if self.dragging {
@@ -231,7 +231,7 @@ impl Common {
 
     /// Renders the resize modal.
     pub fn render_resize(&mut self, ui: &Ui, open: bool) -> Option<Resizer> {
-        let title = format!("Resize Element##reffect{}", self.id);
+        let title = format!("Resize Element##reffect-open{}", self.id);
         if open {
             ui.open_popup(&title)
         }

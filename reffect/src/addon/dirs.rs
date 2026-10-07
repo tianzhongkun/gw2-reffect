@@ -1,10 +1,11 @@
 use super::Addon;
+use crate::ADDON_DIRECTORY;
 use nexus::paths::get_addon_dir;
 use std::{fs, path::PathBuf};
 
 impl Addon {
     pub fn addon_dir() -> PathBuf {
-        get_addon_dir("reffect").expect("invalid addon directory")
+        get_addon_dir(ADDON_DIRECTORY).expect("invalid addon directory")
     }
 
     pub fn packs_dir() -> PathBuf {

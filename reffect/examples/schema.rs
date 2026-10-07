@@ -1,4 +1,4 @@
-use reffect::schema::Schema;
+use reffect_open::schema::Schema;
 use schemars::schema_for;
 use std::{fs::File, io::BufWriter, path::PathBuf};
 

@@ -105,7 +105,7 @@ impl Element {
             resizer.resize_element(self);
         }
 
-        let title = format!("Confirm Delete##reffect{id}");
+        let title = format!("Confirm Delete##reffect-open{id}");
         if open_delete {
             ui.open_popup(&title)
         }

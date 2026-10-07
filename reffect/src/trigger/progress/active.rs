@@ -1,6 +1,6 @@
 use super::ProgressValue;
 use crate::{
-    context::{Ability, AbilityInfo, Buff, Resource, ResourceType, SkillId},
+    context::{Ability, AbilityInfo, ActiveCooldown, Buff, Resource, ResourceType, SkillId},
     fmt::{Time, Unit},
     settings::FormatSettings,
 };
@@ -129,6 +129,41 @@ impl ProgressActive {
             },
             rate: recharge_rate,
             info,
+        }
+    }
+
+    /// Creates new timed active progress from an off-bar cooldown. It carries no
+    /// slot-specific [`AbilityInfo`] flags, so `info` is empty.
+    pub fn from_active_cooldown(cd: &ActiveCooldown) -> Self {
+        let ActiveCooldown {
+            skill,
+            last_update,
+            recharge_rate,
+            recharge,
+            recharge_remaining,
+            ammo,
+            ammo_recharge,
+            ammo_recharge_remaining,
+            ..
+        } = *cd;
+
+        Self::Ability {
+            id: skill,
+            ammo,
+            recharge,
+            end: if recharge > 0 {
+                last_update + Self::unscale(recharge_remaining, recharge_rate)
+            } else {
+                0
+            },
+            ammo_recharge,
+            ammo_end: if ammo_recharge > 0 {
+                last_update + Self::unscale(ammo_recharge_remaining, recharge_rate)
+            } else {
+                0
+            },
+            rate: recharge_rate,
+            info: BitFlags::empty(),
         }
     }
 

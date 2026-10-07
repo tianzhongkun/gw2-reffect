@@ -1,4 +1,4 @@
-use reffect::{
+use reffect_open::{
     context::{Buff, Context, MapCategory, MapInfo, PlayerBuffInfo, Update},
     elements::{Element, ElementType, Pack},
     schema::Schema,

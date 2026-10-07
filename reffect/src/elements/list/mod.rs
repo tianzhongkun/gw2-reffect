@@ -168,7 +168,7 @@ impl IconList {
                 }
             }
 
-            let title = format!("Confirm Delete##reffectlisticon{i}");
+            let title = format!("Confirm Delete##reffect-open-listicon{i}");
             if !remains {
                 ui.open_popup(&title);
             }

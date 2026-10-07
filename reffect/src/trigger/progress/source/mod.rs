@@ -8,7 +8,7 @@ use self::transfer::Transfer;
 use super::ProgressActive;
 use crate::{
     action::Action,
-    context::{Buff, Context, ResourceType, SkillInfo, Slot, Update, Updates},
+    context::{Buff, Context, ResourceType, SkillId, SkillInfo, Slot, Update, Updates},
     enums::check_variant_array,
     error::Error,
     internal::{Interface, Internal},
@@ -229,8 +229,19 @@ impl ProgressSource {
                 ids.iter()
                     .copied()
                     .filter(|id| *id > 0)
-                    .find_map(|id| skillbar.ability(id))
-                    .map(ProgressActive::from_ability)
+                    .find_map(|id| {
+                        // Prefer the on-bar ability; fall back to an off-bar
+                        // cooldown (e.g. the inactive weapon set) so the trigger
+                        // can track cooldowns that are not on the current bar.
+                        if let Some(ability) = skillbar.ability(id) {
+                            return Some(ProgressActive::from_ability(ability));
+                        }
+                        let cooldowns = ctx.player.active_cooldowns.as_ref().ok()?;
+                        cooldowns
+                            .iter()
+                            .find(|cd| cd.skill == SkillId::Id(id))
+                            .map(ProgressActive::from_active_cooldown)
+                    })
             }
             Self::SkillbarSlot { slot } => {
                 let skillbar = ctx.player.skillbar.as_ref().ok()?;

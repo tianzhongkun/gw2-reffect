@@ -47,10 +47,9 @@ The information is retrieved with the following policy in mind:
 - No generic effects for group members. *Ingame these are only displayable in Party UI and not Squad UI.*
 
 ## Building from source
-Reffect is *partially* open source: while a major part of the addon is open source, there is a closed source portion which is responsible for memory reading information from the game.
+Reffect includes an open `reffect_internal` implementation for runtime state and metadata reading. Builds from this repository retain memory-backed features such as player, target, group, build, equipment, skills, and effect state.
 
-When building from source this closed source portion is substituted with a dummy implementation, disabling all features that require memory reading capabilities.
-Contributors can request full builds with memory reading for their pull requests when necessary.
+The reader validates every recovered pointer chain and publishes a domain-specific error when a Guild Wars 2 client update makes a layout incompatible. Use the in-addon debug view to inspect unavailable domains after an update.
 
 ## Pack format
 The JSON schema for the pack format is [docs/schema.json](./docs/schema.json).

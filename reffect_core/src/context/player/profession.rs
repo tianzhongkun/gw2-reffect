@@ -62,6 +62,26 @@ impl TryFrom<u8> for Profession {
 }
 
 impl Profession {
+    /// The profession's id in the official API (Guardian=1 … Revenant=9).
+    ///
+    /// Not the enum's raw discriminant: this is a `[BitFlags]` type whose
+    /// variants are bit positions (`Guardian = 1 << 1` … `Revenant = 1 << 9`),
+    /// so `as u8` yields the bit value and truncates `Revenant` to 0.
+    #[inline]
+    pub const fn api_id(self) -> u8 {
+        match self {
+            Self::Guardian => 1,
+            Self::Warrior => 2,
+            Self::Engineer => 3,
+            Self::Ranger => 4,
+            Self::Thief => 5,
+            Self::Elementalist => 6,
+            Self::Mesmer => 7,
+            Self::Necromancer => 8,
+            Self::Revenant => 9,
+        }
+    }
+
     pub fn specializations(&self) -> BitFlags<Specialization> {
         match self {
             Self::Guardian => {

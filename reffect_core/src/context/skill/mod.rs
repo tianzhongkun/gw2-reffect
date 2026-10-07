@@ -1,9 +1,10 @@
 mod ability;
 mod buff;
+mod cooldown;
 mod skillbar;
 mod slot;
 
-pub use self::{ability::*, buff::*, skillbar::*, slot::*};
+pub use self::{ability::*, buff::*, cooldown::*, skillbar::*, slot::*};
 
 use enumflags2::{BitFlags, bitflags};
 use strum::{AsRefStr, Display, IntoStaticStr};

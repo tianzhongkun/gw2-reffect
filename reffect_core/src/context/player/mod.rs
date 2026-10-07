@@ -7,7 +7,7 @@ mod resources;
 mod specialization;
 
 use crate::{
-    context::skill::{BuffMap, Skillbar},
+    context::skill::{ActiveCooldown, BuffMap, Skillbar},
     error::Error,
 };
 use nexus::data_link::mumble::{Identity, MumblePtr};
@@ -44,6 +44,11 @@ pub struct PlayerInfo {
 
     /// Player skillbar.
     pub skillbar: Result<Skillbar, Error>,
+
+    /// Cooldowns the game is currently tracking, including skills that are not
+    /// on the current bar (e.g. the inactive weapon set). On-bar cooldowns are
+    /// also reflected by [`PlayerInfo::skillbar`].
+    pub active_cooldowns: Result<Vec<ActiveCooldown>, Error>,
 }
 
 impl PlayerInfo {
@@ -59,6 +64,7 @@ impl PlayerInfo {
             resources: Err(Error::Disabled),
             buff_info: Err(Error::Disabled),
             skillbar: Err(Error::Disabled),
+            active_cooldowns: Err(Error::Disabled),
         }
     }
 
@@ -74,6 +80,7 @@ impl PlayerInfo {
             resources: Ok(PlayerResources::empty()),
             buff_info: Ok(PlayerBuffInfo::empty()),
             skillbar: Ok(Skillbar::empty()),
+            active_cooldowns: Ok(Vec::new()),
         }
     }
 
@@ -95,7 +102,8 @@ impl PlayerInfo {
         self.build = Err(error.clone());
         self.resources = Err(error.clone());
         self.buff_info = Err(error.clone());
-        self.skillbar = Err(error);
+        self.skillbar = Err(error.clone());
+        self.active_cooldowns = Err(error);
     }
 
     #[inline]

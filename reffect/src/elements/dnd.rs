@@ -13,7 +13,7 @@ static mut DRAGGED: Option<Element> = None;
 pub struct Dnd;
 
 impl Dnd {
-    pub const ID: &'static str = "reffect-el";
+    pub const ID: &'static str = "reffect-open-el";
 
     pub fn set_dragging(element: Element) {
         unsafe { DRAGGED = Some(element.clone()) }

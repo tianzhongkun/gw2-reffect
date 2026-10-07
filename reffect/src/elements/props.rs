@@ -125,7 +125,7 @@ where
                 }
             }
 
-            let title = format!("Confirm Delete##reffectcond{i}");
+            let title = format!("Confirm Delete##reffect-open-cond{i}");
             if !remains {
                 ui.open_popup(&title);
             }

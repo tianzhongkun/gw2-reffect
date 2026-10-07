@@ -68,7 +68,7 @@ impl Addon {
     }
 
     fn render_popups(&mut self, ui: &Ui) {
-        const CREATE_ERROR_TITLE: &str = "Pack Creation Error##reffect";
+        const CREATE_ERROR_TITLE: &str = "Pack Creation Error##reffect-open";
 
         if self.create_error {
             self.create_error = false;

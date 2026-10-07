@@ -93,7 +93,7 @@ impl fmt::Display for Unit<f32> {
             Self::GIGA.. => write!(f, "{:.2}B", value / Self::GIGA),
             Self::MEGA.. => write!(f, "{:.2}M", value / Self::MEGA),
             Self::KILO.. => write!(f, "{:.1}k", value / Self::KILO),
-            _ => write!(f, "{:.}", (value * 10.0).round_ties_even() / 10.0),
+            _ => write!(f, "{:.1}", (value * 10.0).round_ties_even() / 10.0),
         }
     }
 }

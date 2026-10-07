@@ -34,6 +34,7 @@ windows = { workspace = true, features = ["Win32_Media"] }
 winresource = "0.1.17"
 
 [lib]
+name = "reffect_open"
 crate-type = ["lib", "cdylib"]
 
 [[example]]
@@ -41,8 +42,8 @@ name = "schema"
 required-features = ["schema"]
 
 [package.metadata.winresource]
-ProductName = "Reffect"
-OriginalFilename = "reffect.dll"
+ProductName = "Reffect Open"
+OriginalFilename = "reffect_open.dll"
 
 [features]
 profile = ["reffect_core/profile", "reffect_internal/profile"]

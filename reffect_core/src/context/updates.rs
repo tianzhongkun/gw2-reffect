@@ -27,6 +27,9 @@ pub enum Update {
     /// Player skillbar update.
     PlayerSkillbar = 1 << 5,
 
+    /// Player active (incl. off-bar) cooldowns update.
+    PlayerActiveCooldowns = 1 << 14,
+
     /// Pet resources.
     PetResources = 1 << 6,
 

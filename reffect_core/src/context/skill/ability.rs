@@ -90,10 +90,11 @@ impl Ability {
         self.last_update + (self.recharge_remaining as f32 / self.recharge_rate) as u32
     }
 
-    /// Returns the recharge progress.
+    /// Returns the remaining fraction of the recharge (`1.0` right after the
+    /// cast, `0.0` when ready).
     #[inline]
     pub fn recharge_progress(&self, now: u32) -> f32 {
-        self.recharge_remaining(self.passed(now)) as f32 / self.recharge as f32
+        Self::progress(self.recharge_remaining(now), self.recharge)
     }
 
     /// Returns the remaining ammo recharge.
@@ -103,10 +104,21 @@ impl Ability {
             .saturating_sub(self.passed(now))
     }
 
-    /// Returns the ammo recharge progress.
+    /// Returns the remaining fraction of the ammo recharge (`1.0` right after
+    /// the cast, `0.0` when ready).
     #[inline]
     pub fn ammo_recharge_progress(&self, now: u32) -> f32 {
-        self.ammo_recharge_remaining(self.passed(now)) as f32 / self.ammo_recharge as f32
+        Self::progress(self.ammo_recharge_remaining(now), self.ammo_recharge)
+    }
+
+    /// Returns `remaining / total`, `0.0` when the total is unknown.
+    #[inline]
+    fn progress(remaining: u32, total: u32) -> f32 {
+        if total > 0 {
+            remaining.min(total) as f32 / total as f32
+        } else {
+            0.0
+        }
     }
 }
 
@@ -190,5 +202,43 @@ impl Named for AbilityInfo {
 impl Colored for AbilityInfo {
     fn colored(&self) -> Option<Color> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recharge_progress_uses_the_remaining_recharge_at_now() {
+        // The progress has to be derived from the remaining recharge at `now`.
+        // Feeding the already elapsed time back into `recharge_remaining` double
+        // subtracts it (saturating at zero), which froze the displayed
+        // percentage at the initial snapshot value for the whole cooldown.
+        let mut ability = Ability::simple(1234, 1_000, 10_000);
+        ability.recharge_remaining = 8_000;
+
+        assert!((ability.recharge_progress(1_000) - 0.8).abs() < f32::EPSILON);
+        assert!((ability.recharge_progress(6_000) - 0.3).abs() < f32::EPSILON);
+        assert!((ability.recharge_progress(11_000) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn ammo_recharge_progress_uses_the_remaining_recharge_at_now() {
+        let mut ability = Ability::simple(1234, 1_000, 0);
+        ability.ammo_recharge = 4_000;
+        ability.ammo_recharge_remaining = 3_000;
+
+        assert!((ability.ammo_recharge_progress(1_000) - 0.75).abs() < f32::EPSILON);
+        assert!((ability.ammo_recharge_progress(3_000) - 0.25).abs() < f32::EPSILON);
+        assert!((ability.ammo_recharge_progress(5_000) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn progress_without_a_total_is_zero() {
+        let ability = Ability::simple(1234, 1_000, 0);
+
+        assert_eq!(ability.recharge_progress(2_000), 0.0);
+        assert_eq!(ability.ammo_recharge_progress(2_000), 0.0);
     }
 }
