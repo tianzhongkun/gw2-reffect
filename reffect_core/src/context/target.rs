@@ -18,6 +18,12 @@ pub struct TargetInfo {
     /// matches filters on the axes that are known.
     pub category: Result<BitFlags<TargetCategory>, Error>,
 
+    /// World position of the target.
+    pub position: Result<[f32; 3], Error>,
+
+    /// Distance from the player in game units, when both positions are known.
+    pub distance: Result<f32, Error>,
+
     /// Generic combatant resources.
     pub resources: Result<CombatantResources, Error>,
 
@@ -31,6 +37,8 @@ impl TargetInfo {
         Self {
             affinity: Err(Error::Disabled),
             category: Err(Error::Disabled),
+            position: Err(Error::Disabled),
+            distance: Err(Error::Disabled),
             resources: Err(Error::Disabled),
             buffs: Err(Error::Disabled),
         }
@@ -43,6 +51,8 @@ impl TargetInfo {
             category: Ok(make_bitflags!(TargetCategory::{
                 Monster | Hostile | Normal
             })),
+            position: Ok([0.0; 3]),
+            distance: Ok(0.0),
             resources: Ok(CombatantResources::empty()),
             buffs: Ok(BuffMap::new()),
         }
@@ -52,6 +62,8 @@ impl TargetInfo {
     pub fn set_error(&mut self, error: Error) {
         self.affinity = Err(error.clone());
         self.category = Err(error.clone());
+        self.position = Err(error.clone());
+        self.distance = Err(error.clone());
         self.resources = Err(error.clone());
         self.buffs = Err(error);
     }

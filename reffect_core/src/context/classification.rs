@@ -76,6 +76,10 @@ pub enum TargetCategory {
     /// Other environmental object.
     Gadget = 1 << 6,
 
+    /// Attack target object: the prop of a world boss or a destructible
+    /// structure such as a fort wall. Hostile, but not a creature.
+    AttackTarget = 1 << 20,
+
     /// Allied, green nameplate.
     Friendly = 1 << 7,
 
@@ -124,8 +128,9 @@ pub enum TargetCategory {
 
 impl TargetCategory {
     /// Entity kind axis.
-    pub const KIND: BitFlags<Self> =
-        make_bitflags!(Self::{Player | Pet | Npc | Monster | Gatherable | Chest | Gadget});
+    pub const KIND: BitFlags<Self> = make_bitflags!(
+        Self::{Player | Pet | Npc | Monster | Gatherable | Chest | Gadget | AttackTarget}
+    );
 
     /// Disposition axis.
     pub const AFFINITY: BitFlags<Self> = make_bitflags!(Self::{Friendly | Neutral | Hostile});
@@ -175,6 +180,7 @@ impl Named for TargetCategory {
             Self::Gatherable => "Node",
             Self::Chest => "Chest",
             Self::Gadget => "Object",
+            Self::AttackTarget => "Attack Target",
             Self::Friendly => "Ally",
             Self::Neutral => "Neutral",
             Self::Hostile => "Hostile",
@@ -216,6 +222,7 @@ impl Colored for TargetCategory {
             Self::Gatherable => Some(rgb(0.55, 0.85, 0.55)),
             Self::Chest => Some(rgb(1.00, 0.85, 0.35)),
             Self::Gadget => Some(rgb(0.70, 0.70, 0.75)),
+            Self::AttackTarget => Some(colors::RED),
             Self::Ore => Some(rgb(0.75, 0.75, 0.80)),
             Self::Wood => Some(rgb(0.65, 0.45, 0.25)),
             Self::Plant => Some(rgb(0.45, 0.85, 0.35)),

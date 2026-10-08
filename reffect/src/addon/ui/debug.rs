@@ -107,6 +107,13 @@ impl Addon {
                     Err(err) => ui.text_colored(colors::RED, err.to_string()),
                 }
 
+                ui.text("Target distance:");
+                ui.same_line();
+                match &ctx.target.distance {
+                    Ok(distance) => ui.text(format!("{distance:.1}")),
+                    Err(err) => ui.text_colored(colors::RED, err.to_string()),
+                }
+
                 render_target_probe(ui);
 
                 ui.text(format!("Map id: {}", ctx.map.id));

@@ -36,12 +36,49 @@ Structures (sizes as of the current build, little-endian x64):
 | `RfBuild` | 128 |
 | `RfGear` | 24 |
 | `RfGroupMember` | 1568 |
-| `RfSnapshot` | 12372 |
+| `RfSnapshot` | 12404 |
 
 `RfCombatant::health_state` is `0` alive, `1` downed, `2` dead, `255` unknown.
-`RfSnapshot::target_affinity` and `target_category` are bit sets that are `0`
-when the reader could not classify the target; the bit meanings are documented in
-`reffect_snapshot.h`.
+
+## Target classification and distance
+
+The snapshot carries everything needed to gate an action on the current target
+without any further memory reading:
+
+| Field | Meaning |
+| --- | --- |
+| `target_valid` | A target is selected |
+| `target_kind` | `RF_TARGET_*`: player, NPC, monster, attack target, gatherable, chest, gadget, pet, or unknown |
+| `target_affinity` | `1` friendly, `2` hostile, `4` neutral, `0` unknown |
+| `target_category` | `RF_CAT_*` bits: entity kind, disposition, NPC rank and gathering discipline |
+| `target_position[3]` | Target world position in game units |
+| `player_position[3]` | Player world position in game units |
+| `target_distance` | Distance between the two, `-1.0` when either is unknown |
+
+`target_kind` is the kind axis of `target_category` reduced to one byte, so a
+consumer that only needs to decide whether a target is worth attacking can
+switch on it:
+
+```c
+const RfSnapshot* snap = reffect_snapshot();
+
+int attackable = snap->target_kind == RF_TARGET_MONSTER ||
+                 snap->target_kind == RF_TARGET_ATTACK_TARGET;
+
+if (attackable && snap->target_distance >= 0.0f &&
+    snap->target_distance <= skill_range) {
+    use_skill();
+}
+```
+
+`target_category` adds the detail: `RF_CAT_VETERAN` … `RF_CAT_LEGENDARY` for the
+NPC rank, `RF_CAT_ORE` / `RF_CAT_WOOD` / `RF_CAT_PLANT` for the gathering
+discipline, and `RF_CAT_HOSTILE` / `RF_CAT_NEUTRAL` / `RF_CAT_FRIENDLY` for the
+disposition. A target the reader could not classify reports
+`RF_TARGET_UNKNOWN`, `target_category == 0` and `target_distance == -1.0`, so a
+consumer that requires a classification stays inactive rather than guessing.
+
+The distance is in the game's own units, the same ones skill tooltips use.
 
 ```c
 #include "reffect_snapshot.h"

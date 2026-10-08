@@ -301,6 +301,15 @@ const RESOURCE_NODE_PLANT: u32 = 0;
 const RESOURCE_NODE_TREE: u32 = 1;
 const RESOURCE_NODE_ROCK: u32 = 2;
 const RESOURCE_NODE_CACHE: u32 = 6;
+
+/// Coordinate object reached from an agent, and the world position inside it.
+/// Character agents and keyframed gadget agents both keep it at `+0x50`, and the
+/// position is the first vector of the coordinate object.
+const AGENT_COORDINATE: usize = 0x50;
+const COORDINATE_POSITION: usize = 0x30;
+/// Positions outside this magnitude are a misread rather than a place in Tyria.
+const POSITION_LIMIT: f32 = 1_000_000.0;
+
 /// Regions dumped by the target classification probe
 /// (`log_target_classification_probe`), as `(start, end)` byte offsets from the
 /// region base, emitted in `PROBE_CHUNK` sized hexdump lines. Only used for
@@ -583,6 +592,7 @@ struct RuntimeSnapshot {
     race: Option<u8>,
     profession: Option<u8>,
     specialization: Option<u32>,
+    position: Option<[f32; 3]>,
     resources: Option<PlayerResourceSnapshot>,
     buffs: Option<PlayerBuffInfo>,
     build: Option<Build>,
@@ -633,6 +643,10 @@ struct TargetSnapshot {
     affinity: Result<Affinity, Error>,
     /// Classification when readable, otherwise the reason it is not.
     category: Result<BitFlags<TargetCategory>, Error>,
+    /// World position when readable.
+    position: Result<[f32; 3], Error>,
+    /// Distance from the player when both positions are readable.
+    distance: Result<f32, Error>,
     /// Resources when readable, or 'Error::TargetState' when the resolved
     /// character carries no health object (large map-break gadgets).
     resources: Result<CombatantResources, Error>,
@@ -714,12 +728,15 @@ fn decode_snapshot(
         // and the debug window stops advertising a stale sequence.
         clear_target_probe();
     }
+    let position =
+        pointer_at(game, character, CHARACTER_AGENT).and_then(|agent| read_position(game, agent));
 
     Some(RuntimeSnapshot {
         now,
         race,
         profession,
         specialization,
+        position,
         resources,
         buffs,
         build,
@@ -790,11 +807,14 @@ impl RuntimeSnapshot {
             Some(target) => {
                 context.target.affinity = target.affinity;
                 context.target.category = target.category;
+                context.target.position = target.position;
+                context.target.distance = target.distance;
                 context.target.resources = target.resources;
                 context.target.buffs = target.buffs;
             }
             None => context.target.set_error(Error::Target),
         }
+        context.player.position = self.position.ok_or(Error::Character);
         context
             .updates
             .insert(Update::TargetResources.flags() | Update::TargetBuffs.flags());
@@ -2865,6 +2885,13 @@ fn read_target(
     }
     log_target_classification_probe(game, kind, descriptor, object, character);
     let (affinity, category) = read_target_classification(game, local, kind, descriptor, character);
+    // The descriptor is the agent entry, and both character and gadget agents
+    // keep their coordinate object at the same offset.
+    let position = read_position(game, descriptor);
+    let distance = position.and_then(|position| {
+        let player = read_position(game, pointer_at(game, local, CHARACTER_AGENT)?)?;
+        Some(distance_between(player, position))
+    });
     let (health, barrier_layout, container, defiance) = match kind {
         0 => (
             character.and_then(|character| pointer_at(game, character, CHARACTER_HEALTH)),
@@ -2914,6 +2941,8 @@ fn read_target(
     Some(TargetSnapshot {
         affinity,
         category,
+        position: position.ok_or(Error::TargetState),
+        distance: distance.ok_or(Error::TargetState),
         resources,
         buffs,
     })
@@ -2954,9 +2983,13 @@ fn read_target_classification(
 ) {
     match agent_type {
         AGENT_TYPE_CHARACTER => read_character_classification(game, local, character),
-        AGENT_TYPE_GADGET | AGENT_TYPE_GADGET_ATTACK_TARGET => {
-            read_gadget_classification(game, agent)
-        }
+        AGENT_TYPE_GADGET => read_gadget_classification(game, agent),
+        // An attack target is a prop object: a world boss part or a destructible
+        // structure. It is hostile but not a creature.
+        AGENT_TYPE_GADGET_ATTACK_TARGET => (
+            Ok(Affinity::Hostile),
+            Ok(make_bitflags!(TargetCategory::{AttackTarget | Hostile})),
+        ),
         _ => (Err(Error::Affinity), Err(Error::TargetState)),
     }
 }
@@ -3060,38 +3093,57 @@ fn read_gadget_classification(
     Result<BitFlags<TargetCategory>, Error>,
 ) {
     let gadget_type = value_at::<u32>(game, agent, GADGET_TYPE);
-    let affinity = Err(Error::Affinity);
 
-    let category = match gadget_type {
+    let (affinity, category) = match gadget_type {
         Some(GADGET_TYPE_RESOURCE_NODE) => {
             // Mining, logging and harvesting nodes all report the resource node
             // gadget type; the discipline is on the gadget object.
             let node = pointer_at(game, agent, GADGET_OBJECT)
                 .and_then(|gadget| value_at::<u32>(game, gadget, GADGET_RESOURCE_NODE_TYPE));
-            match node {
-                Some(RESOURCE_NODE_ROCK) => {
-                    make_bitflags!(TargetCategory::{Gatherable | Ore})
-                }
-                Some(RESOURCE_NODE_TREE) => {
-                    make_bitflags!(TargetCategory::{Gatherable | Wood})
-                }
-                Some(RESOURCE_NODE_PLANT) => {
-                    make_bitflags!(TargetCategory::{Gatherable | Plant})
-                }
+            let category = match node {
+                Some(RESOURCE_NODE_ROCK) => make_bitflags!(TargetCategory::{Gatherable | Ore}),
+                Some(RESOURCE_NODE_TREE) => make_bitflags!(TargetCategory::{Gatherable | Wood}),
+                Some(RESOURCE_NODE_PLANT) => make_bitflags!(TargetCategory::{Gatherable | Plant}),
                 Some(RESOURCE_NODE_CACHE) => BitFlags::from(TargetCategory::Chest),
                 // A resource node whose discipline is unreadable is still a
                 // gathering node, just not a specific one.
                 _ => BitFlags::from(TargetCategory::Gatherable),
-            }
+            };
+            (Err(Error::Affinity), category)
         }
-        Some(GADGET_TYPE_ATTACK_TARGET) => {
-            make_bitflags!(TargetCategory::{Gadget | Hostile})
-        }
-        Some(_) => BitFlags::from(TargetCategory::Gadget),
-        None => return (affinity, Err(Error::TargetState)),
+        // A gadget attack target is a world boss prop or a destructible
+        // structure: hostile, but not a creature.
+        Some(GADGET_TYPE_ATTACK_TARGET) => (
+            Ok(Affinity::Hostile),
+            make_bitflags!(TargetCategory::{AttackTarget | Hostile}),
+        ),
+        Some(_) => (Err(Error::Affinity), BitFlags::from(TargetCategory::Gadget)),
+        None => return (Err(Error::Affinity), Err(Error::TargetState)),
     };
 
     (affinity, Ok(category))
+}
+
+/// Reads the world position of an agent, `None` when the coordinate object or
+/// the vector itself does not read back as a place in Tyria.
+fn read_position(game: &impl GameMemory, agent: usize) -> Option<[f32; 3]> {
+    let coordinate = pointer_at(game, agent, AGENT_COORDINATE)?;
+    let position = [
+        value_at::<f32>(game, coordinate, COORDINATE_POSITION)?,
+        value_at::<f32>(game, coordinate, COORDINATE_POSITION + size_of::<f32>())?,
+        value_at::<f32>(game, coordinate, COORDINATE_POSITION + 2 * size_of::<f32>())?,
+    ];
+
+    position
+        .iter()
+        .all(|value| value.is_finite() && value.abs() < POSITION_LIMIT)
+        .then_some(position)
+}
+
+/// Returns the distance between two positions in game units.
+fn distance_between(from: [f32; 3], to: [f32; 3]) -> f32 {
+    let [dx, dy, dz] = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 /// TEMP DEBUG (target classification): dumps the candidate classification fields
@@ -4098,6 +4150,7 @@ mod tests {
             race: None,
             profession: None,
             specialization: None,
+            position: None,
             resources: Some(PlayerResourceSnapshot {
                 health: PlayerHealth::empty(),
                 resources: PlayerResources::empty(),
@@ -5707,11 +5760,26 @@ mod tests {
         ));
 
         memory.u32(agent + GADGET_TYPE, GADGET_TYPE_ATTACK_TARGET);
-        let (_, category) =
+        let (affinity, category) =
             read_target_classification(&memory, local, AGENT_TYPE_GADGET, agent, None);
+        assert!(matches!(affinity, Ok(Affinity::Hostile)));
         assert!(matches!(
             category,
-            Ok(flags) if flags == make_bitflags!(TargetCategory::{Gadget | Hostile})
+            Ok(flags) if flags == make_bitflags!(TargetCategory::{AttackTarget | Hostile})
+        ));
+
+        // An attack target agent is hostile without reading any object field.
+        let (affinity, category) = read_target_classification(
+            &memory,
+            local,
+            AGENT_TYPE_GADGET_ATTACK_TARGET,
+            agent,
+            None,
+        );
+        assert!(matches!(affinity, Ok(Affinity::Hostile)));
+        assert!(matches!(
+            category,
+            Ok(flags) if flags == make_bitflags!(TargetCategory::{AttackTarget | Hostile})
         ));
 
         // A gadget agent with an unreadable type stays unknown.

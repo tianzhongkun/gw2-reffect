@@ -28,6 +28,24 @@ extern "C" {
 #define RF_MAX_SKILL_SELECTIONS 16
 #define RF_MAX_GROUP_MEMBERS 4
 
+/* High level kind of the current target, published in `target_kind`.
+ *
+ * Derived from the kind axis of `target_category`, so a consumer that only needs
+ * to decide whether a target is worth attacking can switch on one byte:
+ *
+ *     if (snap->target_kind == RF_TARGET_MONSTER ||
+ *         snap->target_kind == RF_TARGET_ATTACK_TARGET) { ... }
+ */
+#define RF_TARGET_UNKNOWN       0
+#define RF_TARGET_PLAYER        1
+#define RF_TARGET_NPC           2   /* friendly / neutral non-player character */
+#define RF_TARGET_MONSTER       3   /* hostile or indifferent creature */
+#define RF_TARGET_ATTACK_TARGET 4   /* world boss prop, destructible structure */
+#define RF_TARGET_GATHERABLE    5   /* mining, logging or harvesting node */
+#define RF_TARGET_CHEST         6
+#define RF_TARGET_GADGET        7   /* other environmental object */
+#define RF_TARGET_PET           8
+
 /* A current/max resource pair. */
 typedef struct RfResource {
     float current;
@@ -126,6 +144,9 @@ typedef struct RfSnapshot {
     uint32_t spec;
     uint8_t mount;
 
+    /* Player world position in game units; all zero when unknown. */
+    float player_position[3];
+
     /* Player resources. */
     uint8_t resources_valid;
     RfResources resources;
@@ -155,6 +176,10 @@ typedef struct RfSnapshot {
     /* Target. */
     uint8_t target_valid;
 
+    /* High level kind of the target, one of the RF_TARGET_* codes below.
+     * RF_TARGET_UNKNOWN when the target could not be classified. */
+    uint8_t target_kind;
+
     /* Target classification. Both are bit sets, 0 when unknown.
      *
      * target_affinity (disposition):
@@ -165,7 +190,7 @@ typedef struct RfSnapshot {
      *   kind:   1 << 0  player          1 << 1  pet
      *           1 << 2  npc             1 << 3  monster
      *           1 << 4  gatherable      1 << 5  chest
-     *           1 << 6  gadget
+     *           1 << 6  gadget          1 << 20 attack target
      *   affin.: 1 << 7  friendly        1 << 8  neutral
      *           1 << 9  hostile
      *   rank:   1 << 10 ambient         1 << 11 normal
@@ -177,6 +202,11 @@ typedef struct RfSnapshot {
      */
     uint8_t target_affinity;
     uint32_t target_category;
+
+    /* Target world position in game units, and the distance from the player.
+     * The distance is -1.0 when either position is unknown. */
+    float target_position[3];
+    float target_distance;
 
     RfCombatant target;
     uint32_t target_buff_count;
@@ -199,19 +229,44 @@ size_t reffect_snapshot_size(void);
  *   #include "reffect_snapshot.h"
  *
  *   const RfSnapshot* snap = reffect_snapshot();
- *   if (snap->resources_valid) {
- *       printf("HP %.0f/%.0f  Spec %u\n",
- *              snap->resources.combatant.health_current,
- *              snap->resources.combatant.health_max,
- *              snap->spec);
+ *
+ *   // Gate a rotation on the current target being attackable and in range.
+ *   int attackable = snap->target_kind == RF_TARGET_MONSTER ||
+ *                    snap->target_kind == RF_TARGET_ATTACK_TARGET;
+ *   if (attackable && snap->target_distance >= 0.0f &&
+ *       snap->target_distance <= skill_range) {
+ *       use_skill();
  *   }
- *   for (uint32_t i = 0; i < snap->cooldown_count; ++i) {
- *       const RfCooldown* cd = &snap->cooldowns[i];
- *       printf("cd %u rem %.1fs (off-bar=%d)\n",
- *              cd->skill_id, cd->recharge_remaining_ms / 1000.0f,
- *              cd->slot_index < 0);
+ *
+ *   // The full classification is in target_category, for example a champion
+ *   // monster is RF_CAT_MONSTER | RF_CAT_HOSTILE | RF_CAT_CHAMPION.
+ *   if (snap->target_category & RF_CAT_CHAMPION) {
+ *       use_defiance_break();
  *   }
  */
+
+/* Category bits, matching `target_category`. */
+#define RF_CAT_PLAYER         (1u << 0)
+#define RF_CAT_PET            (1u << 1)
+#define RF_CAT_NPC            (1u << 2)
+#define RF_CAT_MONSTER        (1u << 3)
+#define RF_CAT_GATHERABLE     (1u << 4)
+#define RF_CAT_CHEST          (1u << 5)
+#define RF_CAT_GADGET         (1u << 6)
+#define RF_CAT_FRIENDLY       (1u << 7)
+#define RF_CAT_NEUTRAL        (1u << 8)
+#define RF_CAT_HOSTILE        (1u << 9)
+#define RF_CAT_AMBIENT        (1u << 10)
+#define RF_CAT_NORMAL         (1u << 11)
+#define RF_CAT_VETERAN        (1u << 12)
+#define RF_CAT_ELITE          (1u << 13)
+#define RF_CAT_CHAMPION       (1u << 14)
+#define RF_CAT_LEGENDARY      (1u << 15)
+#define RF_CAT_EPIC           (1u << 16)
+#define RF_CAT_ORE            (1u << 17)
+#define RF_CAT_WOOD           (1u << 18)
+#define RF_CAT_PLANT          (1u << 19)
+#define RF_CAT_ATTACK_TARGET  (1u << 20)
 
 #ifdef __cplusplus
 }

@@ -30,6 +30,9 @@ pub struct PlayerInfo {
     /// Player mount.
     pub mount: Result<Mount, u8>,
 
+    /// Player world position.
+    pub position: Result<[f32; 3], Error>,
+
     /// Player equipped gear.
     pub gear: Result<Gear, Error>,
 
@@ -62,6 +65,7 @@ impl PlayerInfo {
             spec: Err(0),
             race: Err(0),
             mount: Err(0),
+            position: Err(Error::Disabled),
             gear: Err(Error::Disabled),
             build: Err(Error::Disabled),
             health: Err(Error::Disabled),
@@ -79,6 +83,7 @@ impl PlayerInfo {
             spec: Err(0),
             race: Err(0),
             mount: Err(0),
+            position: Ok([0.0; 3]),
             gear: Ok(Gear::empty()),
             build: Ok(Build::empty()),
             health: Ok(PlayerHealth::empty()),

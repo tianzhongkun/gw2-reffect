@@ -11,7 +11,9 @@
 use crate::context::{
     Ability, ActiveCooldown, Buff, Build, CombatantResources, Context, Defiance, Gear,
     PlayerHealth, PlayerResources, Profession, Resource, ResourceState, SkillId, Slot,
+    TargetCategory,
 };
+use enumflags2::BitFlags;
 use strum::IntoEnumIterator;
 
 /// Maximum buffs published in one snapshot.
@@ -24,6 +26,32 @@ pub const RF_MAX_SKILLS: usize = 18;
 pub const RF_MAX_SKILL_SELECTIONS: usize = 16;
 /// Number of group member slots.
 pub const RF_MAX_GROUP_MEMBERS: usize = 4;
+
+/// High level kind codes published in [`RfSnapshot::target_kind`].
+///
+/// Derived from the [`TargetCategory`] kind axis, so a consumer that only needs
+/// to decide whether a target is worth attacking can switch on a single byte
+/// instead of testing category bits.
+pub mod target_kind {
+    /// The target could not be classified.
+    pub const UNKNOWN: u8 = 0;
+    /// Player controlled character.
+    pub const PLAYER: u8 = 1;
+    /// Non-player character that is not hostile.
+    pub const NPC: u8 = 2;
+    /// Hostile or indifferent creature.
+    pub const MONSTER: u8 = 3;
+    /// Attack target object: a world boss prop or a destructible structure.
+    pub const ATTACK_TARGET: u8 = 4;
+    /// Gathering node.
+    pub const GATHERABLE: u8 = 5;
+    /// Chest.
+    pub const CHEST: u8 = 6;
+    /// Other environmental object.
+    pub const GADGET: u8 = 7;
+    /// Pet of a player controlled character.
+    pub const PET: u8 = 8;
+}
 
 /// A current/max resource pair.
 #[repr(C)]
@@ -148,6 +176,8 @@ pub struct RfSnapshot {
     pub profession: u8,
     pub spec: u32,
     pub mount: u8,
+    /// World position of the player, when known.
+    pub player_position: [f32; 3],
 
     // Player resources.
     pub resources_valid: u8,
@@ -177,10 +207,16 @@ pub struct RfSnapshot {
 
     // Target.
     pub target_valid: u8,
+    /// High level kind, one of the [`target_kind`] codes.
+    pub target_kind: u8,
     /// Disposition bits (`Affinity`), 0 when unknown.
     pub target_affinity: u8,
     /// Classification bits (`TargetCategory`), 0 when unknown.
     pub target_category: u32,
+    /// World position of the target, when known.
+    pub target_position: [f32; 3],
+    /// Distance from the player in game units, `-1.0` when unknown.
+    pub target_distance: f32,
     pub target: RfCombatant,
     pub target_buff_count: u32,
     pub target_buffs: [RfBuff; RF_MAX_BUFFS],
@@ -250,6 +286,13 @@ pub fn fill_snapshot(out: &mut RfSnapshot, ctx: &Context) {
         Ok(category) => category.bits(),
         Err(_) => 0,
     };
+    out.target_kind = match &ctx.target.category {
+        Ok(category) => target_kind_of(*category),
+        Err(_) => target_kind::UNKNOWN,
+    };
+    out.target_position = ctx.target.position.as_ref().copied().unwrap_or([0.0; 3]);
+    out.target_distance = ctx.target.distance.as_ref().copied().unwrap_or(-1.0);
+    out.player_position = ctx.player.position.as_ref().copied().unwrap_or([0.0; 3]);
     if let Ok(target_buffs) = &ctx.target.buffs {
         out.target_buff_count = fill_buffs(&mut out.target_buffs, target_buffs, ctx.now);
     }
@@ -277,6 +320,30 @@ pub fn fill_snapshot(out: &mut RfSnapshot, ctx: &Context) {
             count += 1;
         }
         out.group_member_count = count as u32;
+    }
+}
+
+/// Reduces the kind axis of a classification to one [`target_kind`] code.
+fn target_kind_of(category: BitFlags<TargetCategory>) -> u8 {
+    use crate::context::TargetCategory as C;
+    if category.contains(C::Player) {
+        target_kind::PLAYER
+    } else if category.contains(C::Pet) {
+        target_kind::PET
+    } else if category.contains(C::Monster) {
+        target_kind::MONSTER
+    } else if category.contains(C::AttackTarget) {
+        target_kind::ATTACK_TARGET
+    } else if category.contains(C::Gatherable) {
+        target_kind::GATHERABLE
+    } else if category.contains(C::Chest) {
+        target_kind::CHEST
+    } else if category.contains(C::Npc) {
+        target_kind::NPC
+    } else if category.contains(C::Gadget) {
+        target_kind::GADGET
+    } else {
+        target_kind::UNKNOWN
     }
 }
 
@@ -535,7 +602,7 @@ mod tests {
             ("RfBuild", std::mem::size_of::<RfBuild>(), 128),
             ("RfGear", std::mem::size_of::<RfGear>(), 24),
             ("RfGroupMember", std::mem::size_of::<RfGroupMember>(), 1568),
-            ("RfSnapshot", std::mem::size_of::<RfSnapshot>(), 12372),
+            ("RfSnapshot", std::mem::size_of::<RfSnapshot>(), 12404),
         ];
         for (name, size, expected) in sizes {
             assert_eq!(size, expected, "{name} changed size");
@@ -543,17 +610,44 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_target_classification_field_order() {
-        // The C header and the ctypes mirror both place the classification
-        // fields directly after `target_valid`, before `target`. Pin the offsets
-        // so a reordering cannot silently desync the ABI.
-        let valid = std::mem::offset_of!(RfSnapshot, target_valid);
-        assert_eq!(std::mem::offset_of!(RfSnapshot, target_affinity), valid + 1);
-        assert_eq!(std::mem::offset_of!(RfSnapshot, target_category), valid + 4);
-        assert_eq!(std::mem::offset_of!(RfSnapshot, target), valid + 8);
+    fn snapshot_target_field_order() {
+        // The C header and the ctypes mirror must agree with this order. Pin the
+        // offsets so a reordering cannot silently desync the ABI.
+        assert_eq!(std::mem::offset_of!(RfSnapshot, player_position), 16);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_valid), 4536);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_kind), 4537);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_affinity), 4538);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_category), 4540);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_position), 4544);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_distance), 4556);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target), 4560);
 
         // `RfCombatant::health_state` precedes `defiance` in both mirrors.
         assert_eq!(std::mem::offset_of!(RfCombatant, health_state), 16);
         assert_eq!(std::mem::offset_of!(RfCombatant, defiance), 17);
+    }
+
+    #[test]
+    fn target_kind_reduces_the_kind_axis() {
+        use crate::context::TargetCategory as C;
+
+        assert_eq!(target_kind_of(BitFlags::empty()), target_kind::UNKNOWN);
+        for (category, expected) in [
+            (C::Player, target_kind::PLAYER),
+            (C::Pet, target_kind::PET),
+            (C::Npc, target_kind::NPC),
+            (C::Monster, target_kind::MONSTER),
+            (C::AttackTarget, target_kind::ATTACK_TARGET),
+            (C::Gatherable, target_kind::GATHERABLE),
+            (C::Chest, target_kind::CHEST),
+            (C::Gadget, target_kind::GADGET),
+        ] {
+            // Other axes must not affect the kind.
+            let category = BitFlags::from(category)
+                | BitFlags::from(C::Hostile)
+                | BitFlags::from(C::Veteran)
+                | BitFlags::from(C::Ore);
+            assert_eq!(target_kind_of(category), expected, "{category:?}");
+        }
     }
 }
