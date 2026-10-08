@@ -2990,7 +2990,12 @@ fn log_target_classification_probe(
             probe_region(game, "core", core, PROBE_CORE_STATS);
             probe_strings(game, "core", core, PROBE_CORE_STATS);
         }
-        if let Some(agent) = agent {
+        // For kind 0 the target descriptor *is* the character's own agent entry
+        // (`character + 0x98`), verified on 2026-10-08, so dumping it again would
+        // only duplicate the descriptor region.
+        if let Some(agent) = agent
+            && agent != descriptor
+        {
             probe_region(game, "agent", agent, PROBE_AGENT);
             probe_strings(game, "agent", agent, PROBE_AGENT);
         }
@@ -3077,17 +3082,29 @@ fn read_text(game: &impl GameMemory, address: usize, wide: bool) -> Option<Strin
 fn probe_local_name(game: &impl GameMemory, local: usize) {
     use std::sync::atomic::AtomicBool;
     static DONE: AtomicBool = AtomicBool::new(false);
+    static WARNED: AtomicBool = AtomicBool::new(false);
 
-    let Some(name) = RealTimeApi::get()
-        .and_then(|rtapi| rtapi.read_player())
-        .map(|player| player.character_name)
-        .filter(|name| !name.is_empty())
-    else {
-        return;
-    };
-    if DONE.swap(true, Ordering::Relaxed) {
+    if DONE.load(Ordering::Relaxed) {
         return;
     }
+
+    // Read the name from the Mumble link rather than the Nexus RTAPI: the RTAPI
+    // is a separate addon that is not always installed, and without it
+    // `RealTimeApi::get()` returns `None` and the calibration silently never
+    // ran (observed on 2026-10-08). The Mumble link is created by Nexus itself.
+    let name = nexus::data_link::get_mumble_link()
+        .and_then(|mumble| mumble.parse_identity().ok())
+        .map(|identity| identity.name)
+        .filter(|name| !name.is_empty());
+    let Some(name) = name else {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "[reffect-target-classify] local name unavailable, waiting for the Mumble identity"
+            );
+        }
+        return;
+    };
+    DONE.store(true, Ordering::Relaxed);
 
     let agent = pointer_at(game, local, CHARACTER_AGENT);
     let core = pointer_at(game, local, CHARACTER_CORE_STATS);

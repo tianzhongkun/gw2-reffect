@@ -49,9 +49,19 @@
 
 - `object + 0x78`：neutral=2、normal/veteran/champion/elite=1，看起来是**阵营**
   （中立 / 敌对），但 npc 三个样本取值不一致，需要更多数据。
-- `descriptor + 0x40`：kind=10 时 chest=0xe、ore/wood/plant=0x13，像是**物件大类**；
-  kind=0 时这个位置放的是 `0x2000xxxx` 形式的实体 id。同一偏移在不同 kind 下含义不同，
+- `descriptor + 0x40`：kind=10 时 **chest=0xe、ore/wood/plant=0x13**（8 个样本，标签内一致），
+  像是物件类型枚举。**只有 2 个宝箱样本，所以还没写进读取器**，下一批多标几个宝箱再确认。
+  kind=0 时这个位置放的是 `0x2000xxxx` 形式的实体 id，同一偏移在不同 kind 下含义不同，
   说明 descriptor 是按 kind 多态的（`0x00` 处 vtable 也按 kind 分成两组）。
+
+**第三次采样（2026-10-08）确认的链路事实：**
+
+- **`character + 0x98`（agent）在 kind=0 时就是目标 descriptor 本身**（3 个样本逐字节相同，
+  两次会话一致）。所以「目标描述符」其实就是目标的 agent 条目，`agent + 0x08` 就是
+  **agent 类型**（0 角色 / 10 采集点·宝箱 / 11 prop）。探针因此不再重复 dump 相同的 agent 区域。
+- **RTAPI 不一定存在**：这次会话只加载了 7 个 addon，没有 `RTAPI` 数据链接，
+  `RealTimeApi::get()` 返回 `None`。名称标定已改用 **Mumble 链接**（由 Nexus 自己创建，
+  日志里能看到 `Created public shared resource: "DL_MUMBLE_LINK"`）。
 
 **还没找到的**：怪物等级（Veteran/Elite/Champion/Legendary/Epic）、玩家 vs NPC、
 采集专业（矿/树/草）。角色区域的 `0x000..0x540` 里没有任何内联字符串（已扫描确认），

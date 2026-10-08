@@ -8,7 +8,10 @@ authors = ["Zerthox"]
 enumflags2 = { workspace = true }
 log = { workspace = true }
 microseh = { workspace = true }
-nexus = { git = "https://github.com/zerthox/nexus-rs", features = ["rtapi"] }
+nexus = { git = "https://github.com/zerthox/nexus-rs", features = [
+    "mumble_json",
+    "rtapi",
+] }
 reffect_core = { path = "../reffect_core" }
 serde = { workspace = true }
 strum = { workspace = true }
