@@ -266,11 +266,14 @@ const SELECTED_CHARACTER_BIAS: usize = 0x48;
 /// region base, emitted in `PROBE_CHUNK` sized hexdump lines. Only used for
 /// offset recovery; see docs/superpowers/plans/2026-10-08-target-classification-recovery.md.
 const PROBE_CHUNK: usize = 0x80;
-const PROBE_DESCRIPTOR: (usize, usize) = (0x000, 0x080);
-const PROBE_OBJECT: (usize, usize) = (0x000, 0x180);
-const PROBE_CHARACTER: (usize, usize) = (0x000, 0x540);
-const PROBE_CORE_STATS: (usize, usize) = (0x000, 0x180);
-const PROBE_AGENT: (usize, usize) = (0x000, 0x180);
+/// For kinds other than 0 the descriptor and object are separate allocations.
+const PROBE_DESCRIPTOR: (usize, usize) = (0x000, 0x400);
+const PROBE_OBJECT: (usize, usize) = (0x000, 0x400);
+/// For kind 0 the descriptor *is* the character's agent entry and the object is
+/// `character + 0x48`, so both are already inside these ranges.
+const PROBE_CHARACTER: (usize, usize) = (0x000, 0x1000);
+const PROBE_CORE_STATS: (usize, usize) = (0x000, 0x400);
+const PROBE_AGENT: (usize, usize) = (0x000, 0x1000);
 /// Number of probe dumps after which probing stops, so a client that thrashes
 /// the target descriptor cannot flood the log.
 const PROBE_LIMIT: u32 = 256;
@@ -280,7 +283,7 @@ const PROBE_STRING_LIMIT: usize = 12;
 /// that is known to exist rather than for anything name shaped. The character is
 /// wide enough to hold a name table reference, and the agent to reach past the
 /// position and velocity floats.
-const PROBE_LOCAL_CHARACTER: (usize, usize) = (0x000, 0x2000);
+const PROBE_LOCAL_CHARACTER: (usize, usize) = (0x000, 0x4000);
 const PROBE_LOCAL_AGENT: (usize, usize) = (0x000, 0x1000);
 const PROBE_LOCAL_CORE: (usize, usize) = (0x000, 0x400);
 /// Bytes searched inside each pointer target by the second hop of the name search.
@@ -2987,6 +2990,10 @@ fn log_target_classification_probe(
     // character for kind 0. Dumping it for the other kinds would only add noise
     // from whatever happens to live at that offset in the heap.
     if kind == 0 {
+        // For kind 0 the descriptor *is* the character's own agent entry
+        // (`character + 0x98`) and the object is `character + 0x48`, both
+        // verified on 2026-10-08, so their dumps would only duplicate slices of
+        // the character and agent ranges below.
         if let Some(character) = character {
             probe_region(game, "character", character, PROBE_CHARACTER);
             probe_strings(game, "character", character, PROBE_CHARACTER);
@@ -2995,15 +3002,15 @@ fn log_target_classification_probe(
             probe_region(game, "core", core, PROBE_CORE_STATS);
             probe_strings(game, "core", core, PROBE_CORE_STATS);
         }
-        // For kind 0 the target descriptor *is* the character's own agent entry
-        // (`character + 0x98`), verified on 2026-10-08, so dumping it again would
-        // only duplicate the descriptor region.
-        if let Some(agent) = agent
-            && agent != descriptor
-        {
+        if let Some(agent) = agent {
             probe_region(game, "agent", agent, PROBE_AGENT);
             probe_strings(game, "agent", agent, PROBE_AGENT);
         }
+    } else {
+        probe_region(game, "descriptor", descriptor, PROBE_DESCRIPTOR);
+        probe_region(game, "object", object, PROBE_OBJECT);
+        probe_strings(game, "descriptor", descriptor, PROBE_DESCRIPTOR);
+        probe_strings(game, "object", object, PROBE_OBJECT);
     }
 }
 
@@ -3145,10 +3152,11 @@ fn probe_local_name(game: &impl GameMemory, local: usize) {
 /// the worker for a moment. Remove with the rest of the probe.
 fn probe_name_heap(game: &impl GameMemory, name: &str, anchors: &[(&str, usize, (usize, usize))]) {
     /// Stop after this many copies so a name stored in many pools cannot flood
-    /// the log.
-    const MAX_HITS: usize = 16;
+    /// the log. The previous cap of 16 was reached after only 681 MB, so the
+    /// character's own copy may simply not have been seen yet.
+    const MAX_HITS: usize = 64;
     /// Give up after scanning this much, so a huge heap cannot stall the worker.
-    const MAX_SCAN: usize = 0x8000_0000;
+    const MAX_SCAN: usize = 0x1_0000_0000;
 
     let needles = name_needles(name);
     let anchor_data: Vec<(&str, usize, Vec<u8>)> = anchors

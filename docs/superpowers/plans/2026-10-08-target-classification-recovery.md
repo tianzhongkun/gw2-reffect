@@ -82,35 +82,41 @@ hexdump**（每次选择恰好一份）。输出格式：
 ```
 [reffect-target-classify] seq=1 kind=0 descriptor=0x... object=0x... character=0x... agent=0x... core=None
 [reffect-target-classify] local character=0x... agent=0x... core=0x... name="My Character"
-[reffect-target-classify] name pointer local-agent+0x0a0 -> 0x... (wide=false)
+[reffect-target-classify] region local readable 0x4000/0x4000
+[reffect-target-classify] name pointer local-agent+0x0a0 -> 0x... (ascii)
 [reffect-target-classify] name inline local+0x2c0 (utf16)
-[reffect-target-classify] descriptor[0x000..0x080]=00000000 ...
-[reffect-target-classify] object[0x000..0x080]=...
+[reffect-target-classify] heap name 0x144e50adfc0 (utf16) page=0x144e50ad000
+[reffect-target-classify] heap name referenced by local+0x0d0 (anchor 0x14595ba6830)
+[reffect-target-classify] heap name scan done: 64 hit(s) over 0x... bytes
+[reffect-target-classify] character[0x000..0x080]=...     (仅 kind=0，覆盖 0x000..0x1000)
+[reffect-target-classify] agent[0x000..0x080]=...         (仅 kind=0，覆盖 0x000..0x1000)
+[reffect-target-classify] core[0x000..0x080]=...          (仅 kind=0，覆盖 0x000..0x400)
+[reffect-target-classify] descriptor[0x000..0x080]=...    (仅 kind≠0，覆盖 0x000..0x400)
+[reffect-target-classify] object[0x000..0x080]=...        (仅 kind≠0，覆盖 0x000..0x400)
 [reffect-target-classify] string character+0x0d0 -> 0x2a5... = "..."
-[reffect-target-classify] character[0x000..0x080]=...     (仅 kind=0)
-[reffect-target-classify] core[0x000..0x080]=...          (仅 kind=0 且可读)
-[reffect-target-classify] agent[0x000..0x080]=...         (仅 kind=0 且可读)
 ```
 
+- **kind=0 只 dump `character` / `agent` / `core`**：descriptor 就是 `character + 0x98`（即 agent），
+  object 就是 `character + 0x48`，两者都是上面范围内的切片，重复 dump 没有意义。
+- **kind≠0 只 dump `descriptor` / `object`**：这时 `object - 0x48` 不是角色，character/agent/core
+  全是堆上的随机位置。
+- 每个区域按 0x80 字节一行分块输出。
 - **名称标定（`local` / `name pointer` / `name inline` / `heap name`）**：每次会话只跑一次。
   读取器从 **Mumble 链接**（Nexus 自己创建，一定存在）拿到自己角色的名字，然后：
-  1. 在自己的 character（`0x000..0x2000`）、agent（`0x000..0x1000`）、core（`0x000..0x400`）
+  1. 在自己的 character（`0x000..0x4000`）、agent（`0x000..0x1000`）、core（`0x000..0x400`）
      里搜这个名字——内联、指针目标、以及「指针指向的结构的前 0x200 字节」三种形态都搜，
      单字节和 UTF-16 两种编码都搜；
-  2. 如果都没命中，就**扫整个可写私有内存（堆）**找这个名字的每一份拷贝，并对每个命中
-     反查上面三个区域里有没有指向它的指针（`heap name referenced by ...`）。
+  2. 如果都没命中，就**扫整个可写私有内存（堆）**找这个名字的每一份拷贝（最多 64 份、
+     最多 4 GB），并对每个命中反查上面三个区域里有没有指向它的指针
+     （`heap name referenced by ...`）。
 
   因为名字是**已知**的，命中就是确定的，不像「找长得像字符串的东西」那样被随机字节淹没。
   注意：**不要用 RTAPI 拿名字**——它是独立 addon，不一定装（2026-10-08 实测没装，
   `RealTimeApi::get()` 返回 `None`，标定静默不跑）。
 - 每个区域还会打一行 `region <名字> readable <实际>/<请求>`，用来判断结构真实大小。
 - `string <区域>+<偏移> -> <指针> = "..."`：该偏移上的指针指向一段可打印**单字节**字符串
-  （4 字符以上、含字母、以 NUL 结束），每个区域最多 12 条。**不再接受 UTF-16** —— 随机堆字节
-  解码出来几乎都是合法 CJK 码位，会把真正的命中埋掉（上一批就是这样，40 行全是垃圾）。
-- 每个区域按 0x80 字节一行分块输出；`character` 覆盖 `0x000..0x540`（含名称、core stats
-  指针、health 指针、profession 等），`object` / `core` / `agent` 各覆盖 `0x000..0x180`。
-- `character` / `agent` / `core` **只在 `kind=0` 时输出**：读取器一律用 `object - 0x48` 求
-  character，对其它 kind 这个地址只是堆上的随机位置，dump 出来全是噪声。
+  （4 字符以上、含字母、以 NUL 结束），每个区域最多 12 条。**不接受 UTF-16** —— 随机堆字节
+  解码出来几乎都是合法 CJK 码位，会把真正的命中埋掉（实测 40 行全是垃圾）。
 - `seq=N` 是本次会话内的采样序号，调试窗口会显示当前选中目标的序号，用它来标注。
 - `???????` 表示该地址不可读，同时也标出了结构实际结束的位置。
 
