@@ -276,6 +276,10 @@ const PROBE_AGENT: (usize, usize) = (0x000, 0x180);
 const PROBE_LIMIT: u32 = 256;
 /// Maximum strings logged per region by the probe.
 const PROBE_STRING_LIMIT: usize = 12;
+/// Wider ranges used by the one-shot local name calibration, which searches for
+/// a name that is known to exist rather than for anything name shaped.
+const PROBE_LOCAL_CHARACTER: (usize, usize) = (0x000, 0x800);
+const PROBE_LOCAL_AGENT: (usize, usize) = (0x000, 0x400);
 
 /// Sequence of the target classification probe dump for the currently selected
 /// target; 0 when no target is selected or the probe limit was reached.
@@ -466,6 +470,9 @@ impl GameStateReader {
             captured.local,
             &mut buffs,
         );
+        // Runs on the worker rather than in `decode_snapshot` because it reads
+        // the Nexus RTAPI, which is unavailable in unit tests.
+        probe_local_name(&ProcessMemory, captured.local);
         // TEMP DEBUG 2026-10-04: 定位 memory 链路（1Hz 限频，诊断完删除）。
         {
             use std::sync::atomic::{AtomicU64, Ordering};
@@ -3020,50 +3027,163 @@ fn probe_strings(game: &impl GameMemory, name: &str, base: usize, range: (usize,
     }
 }
 
-/// Reads a NUL terminated printable string at `address`, accepting either
-/// single byte characters or UTF-16 code units.
+/// Reads a NUL terminated printable ASCII string at `address`.
 ///
-/// Requiring the terminator, a minimum length and a letter keeps random
-/// pointers that happen to land in mapped memory from looking like strings.
+/// UTF-16 is deliberately not accepted here: random heap bytes decode to valid
+/// CJK code units, which buried the real matches in noise. Exact matching
+/// against a known name is done by [`probe_local_name`] instead.
 fn read_probe_string(game: &impl GameMemory, address: usize) -> Option<String> {
-    const MAX: usize = 96;
+    let text = read_text(game, address, false)?;
+    (text.chars().count() >= 4 && text.chars().any(|c| c.is_alphabetic())).then_some(text)
+}
 
-    let mut narrow = String::new();
-    let mut terminated = false;
-    for index in 0..MAX {
-        match value_at::<u8>(game, address, index) {
-            Some(0) => {
-                terminated = true;
-                break;
-            }
-            Some(byte) if (0x20..0x7f).contains(&byte) => narrow.push(byte as char),
-            _ => break,
-        }
-    }
-    if terminated && narrow.chars().count() >= 4 && narrow.chars().any(|c| c.is_alphabetic()) {
-        return Some(narrow);
-    }
+/// Reads a NUL terminated string at `address`, either single byte or UTF-16,
+/// without any plausibility filter. For exact comparisons only.
+fn read_text(game: &impl GameMemory, address: usize, wide: bool) -> Option<String> {
+    const MAX: usize = 128;
 
-    let mut wide = String::new();
-    let mut terminated = false;
-    for index in 0..MAX / 2 {
-        match value_at::<u16>(game, address, index * 2) {
-            Some(0) => {
-                terminated = true;
-                break;
+    let mut text = String::new();
+    if wide {
+        for index in 0..MAX / 2 {
+            match value_at::<u16>(game, address, index * 2) {
+                Some(0) => return (!text.is_empty()).then_some(text),
+                Some(unit) => text.push(char::from_u32(u32::from(unit))?),
+                None => return None,
             }
-            Some(unit) => match char::from_u32(u32::from(unit)) {
-                Some(character) if !character.is_control() => wide.push(character),
-                _ => break,
-            },
-            None => break,
         }
-    }
-    if terminated && wide.chars().count() >= 4 && wide.chars().any(char::is_alphabetic) {
-        return Some(wide);
+    } else {
+        for index in 0..MAX {
+            match value_at::<u8>(game, address, index) {
+                Some(0) => return (!text.is_empty()).then_some(text),
+                Some(byte) if (0x20..0x7f).contains(&byte) => text.push(byte as char),
+                _ => return None,
+            }
+        }
     }
 
     None
+}
+
+/// Locates the character name field by searching the **local** character for the
+/// name the Mumble link reports for the player.
+///
+/// The player's own name is already known, so a hit is unambiguous - unlike
+/// scanning the target for "anything that looks like a string", which random
+/// heap bytes satisfy constantly. The discovered offset can then be read for the
+/// target, and the name gives the NPC rank by its "Veteran"/"Champion"/...
+/// prefix, which is exactly what the game shows the player.
+///
+/// Runs once per session. Remove together with the rest of the probe.
+fn probe_local_name(game: &impl GameMemory, local: usize) {
+    use std::sync::atomic::AtomicBool;
+    static DONE: AtomicBool = AtomicBool::new(false);
+
+    let Some(name) = RealTimeApi::get()
+        .and_then(|rtapi| rtapi.read_player())
+        .map(|player| player.character_name)
+        .filter(|name| !name.is_empty())
+    else {
+        return;
+    };
+    if DONE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let agent = pointer_at(game, local, CHARACTER_AGENT);
+    let core = pointer_at(game, local, CHARACTER_CORE_STATS);
+    log::warn!(
+        "[reffect-target-classify] local character={local:#x} agent={} core={} name={name:?}",
+        pointer_field(agent),
+        pointer_field(core),
+    );
+
+    probe_name_match(game, "local", local, PROBE_LOCAL_CHARACTER, &name);
+    if let Some(agent) = agent {
+        probe_name_match(game, "local-agent", agent, PROBE_LOCAL_AGENT, &name);
+    }
+    if let Some(core) = core {
+        probe_name_match(game, "local-core", core, PROBE_CORE_STATS, &name);
+    }
+}
+
+/// Logs every place `name` occurs in `[start, end)` at `base`: as the target of
+/// a pointer, and inline in either encoding.
+fn probe_name_match(
+    game: &impl GameMemory,
+    region: &str,
+    base: usize,
+    range: (usize, usize),
+    name: &str,
+) {
+    let (start, end) = range;
+
+    let mut offset = start;
+    while offset + size_of::<usize>() <= end {
+        if let Some(pointer) = value_at::<usize>(game, base, offset)
+            && valid_pointer(pointer)
+        {
+            for wide in [false, true] {
+                if read_text(game, pointer, wide).as_deref() == Some(name) {
+                    log::warn!(
+                        "[reffect-target-classify] name pointer {region}+{offset:#05x} -> {pointer:#x} (wide={wide})"
+                    );
+                }
+            }
+        }
+        offset += size_of::<usize>();
+    }
+
+    let Some(data) = read_region_bytes(game, base, start, end) else {
+        return;
+    };
+    let needles = [
+        ("ascii", name.as_bytes().to_vec()),
+        (
+            "utf16",
+            name.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<u8>>(),
+        ),
+    ];
+    for (encoding, needle) in needles {
+        if needle.is_empty() {
+            continue;
+        }
+        let mut from = 0;
+        while from + needle.len() <= data.len() {
+            match data[from..]
+                .windows(needle.len())
+                .position(|window| window == needle)
+            {
+                Some(index) => {
+                    let absolute = from + index;
+                    log::warn!(
+                        "[reffect-target-classify] name inline {region}+{:#05x} ({encoding})",
+                        start + absolute
+                    );
+                    from = absolute + 1;
+                }
+                None => break,
+            }
+        }
+    }
+}
+
+/// Reads `[start, end)` at `base` as bytes, `None` when any word is unreadable.
+fn read_region_bytes(
+    game: &impl GameMemory,
+    base: usize,
+    start: usize,
+    end: usize,
+) -> Option<Vec<u8>> {
+    let mut data = Vec::with_capacity(end - start);
+    let mut offset = start;
+    while offset < end {
+        let word = value_at::<u32>(game, base, offset)?;
+        data.extend_from_slice(&word.to_le_bytes());
+        offset += 4;
+    }
+    Some(data)
 }
 
 /// Formats an optional pointer for the probe log as `0x...`/`None`.
@@ -5083,7 +5203,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_string_reads_narrow_and_wide_names() {
+    fn probe_string_reads_narrow_names_and_read_text_reads_wide_ones() {
         let mut memory = LegacyMixedTreeMemory::default();
         memory.bytes(0x1000, b"Veteran Flame Legion Charr\0");
         let wide: Vec<u8> = "Champion Karka"
@@ -5097,8 +5217,11 @@ mod tests {
             read_probe_string(&memory, 0x1000).as_deref(),
             Some("Veteran Flame Legion Charr")
         );
+        // The scanning reader stays ASCII only, so random heap bytes that decode
+        // to valid CJK code units cannot drown the real matches.
+        assert_eq!(read_probe_string(&memory, 0x2000), None);
         assert_eq!(
-            read_probe_string(&memory, 0x2000).as_deref(),
+            read_text(&memory, 0x2000, true).as_deref(),
             Some("Champion Karka")
         );
     }

@@ -55,10 +55,12 @@
 
 **还没找到的**：怪物等级（Veteran/Elite/Champion/Legendary/Epic）、玩家 vs NPC、
 采集专业（矿/树/草）。角色区域的 `0x000..0x540` 里没有任何内联字符串（已扫描确认），
-所以**目标名称在别的堆分配里**，需要跟着指针去找——这正是探针里 `string` 行要做的事。
+`string` 扫描也只捞到随机堆字节——**目标名称在更深的地方**。
 
-名称很关键：游戏就是用名字前缀（"Veteran …"、"Champion …"）把等级告诉玩家的，
-拿到名称就能同时解决等级、采集专业和宝箱，不必再找客户端内部的 rank 字段。
+所以改成用**已知答案去标定**：读取器从 Mumble 拿到自己角色的名字，在自己的 character /
+agent / core 里搜这个名字，命中的偏移就是名称字段（见下面 `local` / `name pointer` /
+`name inline` 行）。名称很关键：游戏就是用名字前缀（"Veteran …"、"Champion …"）把等级
+告诉玩家的，拿到名称就能同时解决等级、采集专业和宝箱，不必再找客户端内部的 rank 字段。
 
 ## 探针
 
@@ -69,21 +71,27 @@ hexdump**（每次选择恰好一份）。输出格式：
 
 ```
 [reffect-target-classify] seq=1 kind=0 descriptor=0x... object=0x... character=0x... agent=0x... core=None
+[reffect-target-classify] local character=0x... agent=0x... core=0x... name="My Character"
+[reffect-target-classify] name pointer local-agent+0x0a0 -> 0x... (wide=false)
+[reffect-target-classify] name inline local+0x2c0 (utf16)
 [reffect-target-classify] descriptor[0x000..0x080]=00000000 ...
 [reffect-target-classify] object[0x000..0x080]=...
-[reffect-target-classify] object[0x080..0x100]=...
-[reffect-target-classify] object[0x100..0x180]=...
-[reffect-target-classify] string character+0x0d0 -> 0x2a5... = "Veteran Flame Legion Charr"
+[reffect-target-classify] string character+0x0d0 -> 0x2a5... = "..."
 [reffect-target-classify] character[0x000..0x080]=...     (仅 kind=0)
 [reffect-target-classify] core[0x000..0x080]=...          (仅 kind=0 且可读)
 [reffect-target-classify] agent[0x000..0x080]=...         (仅 kind=0 且可读)
 ```
 
+- **名称标定（`local` / `name pointer` / `name inline`）**：每次会话只跑一次。读取器从 Mumble
+  拿到**自己角色的名字**，然后在自己的 character（`0x000..0x800`）、agent（`0x000..0x400`）、
+  core 里搜这个名字——既搜「哪个指针指向它」，也搜「内联在哪个偏移」（单字节和 UTF-16 都搜）。
+  因为名字是**已知**的，命中就是确定的，不像「找长得像字符串的东西」那样被随机字节淹没。
+  找到的偏移对目标同样适用，于是就能读出目标名称。
+- `string <区域>+<偏移> -> <指针> = "..."`：该偏移上的指针指向一段可打印**单字节**字符串
+  （4 字符以上、含字母、以 NUL 结束），每个区域最多 12 条。**不再接受 UTF-16** —— 随机堆字节
+  解码出来几乎都是合法 CJK 码位，会把真正的命中埋掉（上一批就是这样，40 行全是垃圾）。
 - 每个区域按 0x80 字节一行分块输出；`character` 覆盖 `0x000..0x540`（含名称、core stats
   指针、health 指针、profession 等），`object` / `core` / `agent` 各覆盖 `0x000..0x180`。
-- `string <区域>+<偏移> -> <指针> = "..."`：该偏移上的指针指向一段可打印字符串（单字节或
-  UTF-16，要求 4 字符以上、至少一个字母、并且在窗口内以 NUL 结束）。**目标名称就在这些行里**，
-  每个区域最多 12 条。
 - `character` / `agent` / `core` **只在 `kind=0` 时输出**：读取器一律用 `object - 0x48` 求
   character，对其它 kind 这个地址只是堆上的随机位置，dump 出来全是噪声。
 - `seq=N` 是本次会话内的采样序号，调试窗口会显示当前选中目标的序号，用它来标注。
