@@ -54,6 +54,35 @@ def probe_block(
 
 
 class ParseSamplesTest(unittest.TestCase):
+    def test_parses_the_real_log_line_format(self) -> None:
+        # Verbatim from Nexus.log (2026-10-08). The optional pointers were
+        # printed with `{:?}`, i.e. `Some(<decimal>)`, which the first revision
+        # of the parser rejected - it silently found no samples at all.
+        text = (
+            "2026-10-08 08:05:42.359  [Reffect Open]     [WARNING]   "
+            "[reffect-target-classify] seq=1 kind=10 descriptor=0x1d09ba27b30 "
+            "object=0x1d0bb889fc0 character=Some(1996011118456) "
+            "agent=Some(1119788329) core=None"
+        )
+
+        samples = parse_samples(text)
+
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0].kind, 10)
+        self.assertEqual(samples[0].object, 0x1D0BB889FC0)
+
+    def test_parses_hex_optional_pointers(self) -> None:
+        text = (
+            "[reffect-target-classify] seq=2 kind=0 descriptor=0x1d0aa6bcd30 "
+            "object=0x1d0a43098b8 character=0x1d0a4309870 agent=0x1d0a4309b10 "
+            "core=0x1d09b620000"
+        )
+
+        samples = parse_samples(text)
+
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0].kind, 0)
+
     def test_parses_header_and_regions(self) -> None:
         text = "\n".join(
             [

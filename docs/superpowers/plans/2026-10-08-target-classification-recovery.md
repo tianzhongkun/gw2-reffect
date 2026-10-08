@@ -36,60 +36,85 @@
 ### 1. 采集日志
 
 `reffect_internal` 里已经加了一个探针：**每选中一个不同的目标对象，就向 Nexus 日志写一次
-候选结构的 hexdump**（同一目标只写一次，最高 2 Hz）。
-
-日志前缀是 `[reffect-target-classify]`，每个目标会输出 6 行：
+候选结构的 hexdump**（同一目标只写一次，最高 2 Hz）。输出格式：
 
 ```
-[reffect-target-classify] kind=0 descriptor=0x... object=0x... character=0x... agent=0x... core=0x...
-[reffect-target-classify] descriptor[0x00..0x40]=00000000 ...
-[reffect-target-classify] object[0x00..0x80]=...
-[reffect-target-classify] character[0x300..0x540]=...
-[reffect-target-classify] core[0x000..0x180]=...
-[reffect-target-classify] agent[0x000..0x140]=...
+[reffect-target-classify] seq=1 kind=0 descriptor=0x... object=0x... character=0x... agent=0x... core=None
+[reffect-target-classify] descriptor[0x000..0x080]=00000000 ...
+[reffect-target-classify] object[0x000..0x080]=...
+[reffect-target-classify] object[0x080..0x100]=...
+[reffect-target-classify] object[0x100..0x180]=...
+[reffect-target-classify] character[0x000..0x080]=...     (仅 kind=0)
+[reffect-target-classify] core[0x000..0x080]=...          (仅 kind=0 且可读)
+[reffect-target-classify] agent[0x000..0x080]=...         (仅 kind=0 且可读)
 ```
+
+- 每个区域按 0x80 字节一行分块输出；`character` 覆盖 `0x000..0x540`（含名称、core stats
+  指针、health 指针、profession 等），`object` / `core` / `agent` 各覆盖 `0x000..0x180`。
+- `character` / `agent` / `core` **只在 `kind=0` 时输出**：读取器一律用 `object - 0x48` 求
+  character，对其它 kind 这个地址只是堆上的随机位置，dump 出来全是噪声。
+- `seq=N` 是本次会话内的采样序号，事后标注就按它来。
+- `???????` 表示该地址不可读，同时也标出了结构实际结束的位置。
 
 日志由 Nexus 写在 `<GW2 安装目录>/addons/Nexus/Nexus.log`（注意是 `Nexus` 子目录，不是
-`addons` 根目录），每一行前面会带 `[Reffect (alpha)]` 标签。把日志复制出来，只保留
+`addons` 根目录），每行前面带 `[Reffect Open]` 标签。把日志复制出来，只保留
 `[reffect-target-classify]` 行即可。
 
 探针必须用**当前分支构建的 DLL**才会输出，上游发布的 0.11.3 / 0.13.1 都没有这些行：
 
 ```bash
 cargo build --release
-cp target/release/reffect.dll "<GW2 安装目录>/addons/Reffect.dll"
+cp target/release/reffect_open.dll "<GW2 安装目录>/addons/reffect_open.dll"
 ```
 
-用 `[Reffect (alpha)] [INFO] Reffect v0.13.2 load` 这一行确认装上去的是新构建。
+用 `[Reffect Open] [INFO] Reffect v0.13.2 load` 这一行确认装上去的是新构建。
 
-> 本机现状（2026-10-08 核对）：完整可运行的客户端在 `D:\临时\GuildWars2`，其
-> `addons\Reffect.dll` 仍是 **v0.11.3**（2026-07-09），日志
-> `addons\Nexus\Nexus.log` 停在 2026-07-12，里面没有任何 `[reffect-runtime]` 行。
-> `C:\Users\Loong\Games\GuildWars2` 只剩下 `addons` 的少量文件，缺少 `Gw2-64.exe`
-> 和 Nexus 的 `d3d11.dll`，不能用来跑探针。
+> 本机现状（2026-10-08 核对）：客户端在 `E:\Games\GuildWars2`，`addons\reffect_open.dll`
+> 就是本分支的 release 构建。第一次采样（13 个目标）已经跑出来了，见下面「第一次采样」。
+
+### 第一次采样（2026-10-08，13 个目标，无标注）
+
+结论只有一条，但很重要：**`kind` 标签不能直接映射成分类**。
+
+- 13 个目标里 **10 个是 kind 10/11，只有 3 个是 kind 0**。如果按早先的假设把 kind 10/11
+  当成「大型地图物件」，绝大多数普通目标都会被错标成 `Gadget`。所以现在 `kind != 0`
+  一律返回「未知」，不再猜测。
+- 个别 kind=10 样本能读出形似合法的 `agent` / `core` 指针，但堆上指针密集，`object - 0x48`
+  又总是落在已映射的堆里，所以这**不足以**证明 kind 10 是角色。需要下一批带标注的数据才能判断。
+- descriptor 的 `0x00` 处 vtable 恰好按 kind 分成两组（kind 0 一组，kind 10/11 另一组），
+  证实 `kind` 是真实的类型标签，但语义仍未确定。
+- 这一批没有标注，也没有覆盖采集点 / 宝箱 / 各级怪物，所以无法用来定位 rank 或 agent type。
+
+下一批采样请严格按下面的清单和顺序来。
 
 ### 2. 采样清单
 
 **每个目标至少采样两次**（选中 → 等约 1 秒 → 切走 → 再选回来），并在 `--labels` 里重复它的标签。
 只采样一次的话，任何「随采样递增」的字段（计时器、id、地址）都会看起来像完美分类字段。
 
+**按顺序选，并把顺序记下来**：`seq` 从 1 开始，`--labels` 必须与 `seq` 一一对应。中途误选到
+别的目标会让后面全部错位，所以宁可重开一次会话重新采。
+
 建议的采样顺序（每项两次）：
 
-| 顺序 | 目标 | 期望分类 |
+| seq | 目标 | 期望分类 |
 | --- | --- | --- |
-| 1 | 队伍里的队友玩家 | Player + Friendly |
-| 2 | 普通红名怪 | Monster + Hostile + Normal |
-| 3 | Veteran（"Veteran ..." 铜边） | Monster + Hostile + Veteran |
-| 4 | Elite（银边，副本内较多） | Monster + Hostile + Elite |
-| 5 | Champion（金边 + 交叉剑） | Monster + Hostile + Champion |
-| 6 | Legendary（紫边 + 交叉剑） | Monster + Hostile + Legendary |
-| 7 | Epic 世界 boss | Monster + Hostile + Epic |
-| 8 | 中立黄名生物 | Monster + Neutral + Ambient |
-| 9 | 矿点（如 Mithril Ore） | Gatherable + Ore |
-| 10 | 树（如 Ancient Sapling） | Gatherable + Wood |
-| 11 | 草/植物（如 Herb Sprouts） | Gatherable + Plant |
-| 12 | 宝箱 | Chest |
-| 13 | 友好 NPC（商人 / 服务） | NPC + Friendly |
+| 1–2 | 队伍里的队友玩家 | Player + Friendly |
+| 3–4 | 普通红名怪 | Monster + Hostile + Normal |
+| 5–6 | Veteran（"Veteran ..." 铜边） | Monster + Hostile + Veteran |
+| 7–8 | Elite（银边，副本内较多） | Monster + Hostile + Elite |
+| 9–10 | Champion（金边 + 交叉剑） | Monster + Hostile + Champion |
+| 11–12 | Legendary（紫边 + 交叉剑） | Monster + Hostile + Legendary |
+| 13–14 | Epic 世界 boss | Monster + Hostile + Epic |
+| 15–16 | 中立黄名生物 | Monster + Neutral + Ambient |
+| 17–18 | 矿点（如 Mithril Ore） | Gatherable + Ore |
+| 19–20 | 树（如 Ancient Sapling） | Gatherable + Wood |
+| 21–22 | 草/植物（如 Herb Sprouts） | Gatherable + Plant |
+| 23–24 | 宝箱 | Chest |
+| 25–26 | 友好 NPC（商人 / 服务） | NPC + Friendly |
+
+一个会话里凑不齐也没关系：**同一个 `--labels` 批次里的样本必须是连续采的**，分几次采就分几批
+跑 diff，最后把各批的候选并起来看。
 
 ### 3. 比对候选偏移
 

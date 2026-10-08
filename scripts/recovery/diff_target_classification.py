@@ -46,13 +46,18 @@ from typing import Any
 
 PROBE_PREFIX = "[reffect-target-classify]"
 
+# `descriptor`/`object` are printed as `0x` hex. The optional pointers were
+# originally printed with `{:?}`, i.e. `Some(<decimal>)`/`None`, and newer builds
+# print `0x` hex, so accept both forms.
+OPTIONAL_POINTER = r"(?:Some\(0x[0-9a-f]+\)|Some\(\d+\)|0x[0-9a-f]+|None)"
+
 HEADER = re.compile(
     r"kind=(?P<kind>\d+)"
     r" descriptor=(?P<descriptor>0x[0-9a-f]+)"
     r" object=(?P<object>0x[0-9a-f]+)"
-    r" character=(?P<character>None|0x[0-9a-f]+)"
-    r" agent=(?P<agent>None|0x[0-9a-f]+)"
-    r" core=(?P<core>None|0x[0-9a-f]+)"
+    r" character=(?:Some\((?P<character>\d+)\)|(?P<character_hex>0x[0-9a-f]+)|None)"
+    r" agent=" + OPTIONAL_POINTER
+    + r" core=" + OPTIONAL_POINTER
 )
 
 REGION = re.compile(

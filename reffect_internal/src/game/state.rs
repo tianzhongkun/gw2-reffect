@@ -261,14 +261,16 @@ const TARGET_HEALTH_KIND_11: usize = 0x220;
 const TARGET_EFFECTS_KIND_11: usize = 0x170;
 const TARGET_DEFIANCE_KIND_11: usize = 0x168;
 const SELECTED_CHARACTER_BIAS: usize = 0x48;
-/// Candidate regions dumped by the target classification probe
-/// (`log_target_classification_probe`). Only used for offset recovery.
-const PROBE_DESCRIPTOR_LEN: usize = 0x40;
-const PROBE_OBJECT_LEN: usize = 0x80;
-const PROBE_CHARACTER: usize = 0x300;
-const PROBE_CHARACTER_LEN: usize = 0x240;
-const PROBE_CORE_STATS_LEN: usize = 0x180;
-const PROBE_AGENT_LEN: usize = 0x140;
+/// Regions dumped by the target classification probe
+/// (`log_target_classification_probe`), as `(start, end)` byte offsets from the
+/// region base, emitted in `PROBE_CHUNK` sized hexdump lines. Only used for
+/// offset recovery; see docs/superpowers/plans/2026-10-08-target-classification-recovery.md.
+const PROBE_CHUNK: usize = 0x80;
+const PROBE_DESCRIPTOR: (usize, usize) = (0x000, 0x080);
+const PROBE_OBJECT: (usize, usize) = (0x000, 0x180);
+const PROBE_CHARACTER: (usize, usize) = (0x000, 0x540);
+const PROBE_CORE_STATS: (usize, usize) = (0x000, 0x180);
+const PROBE_AGENT: (usize, usize) = (0x000, 0x180);
 const CHARACTER_DEFIANCE: usize = 0xC8;
 const CHARACTER_WEAPON_SWAP_STATE: usize = 0xD8;
 const DEFIANCE_STATE: usize = 0x40;
@@ -2828,12 +2830,8 @@ fn read_target(
 /// Classifies the selected target from the fields the recovered read graph
 /// exposes today.
 ///
-/// Only structurally certain results are published:
-///
-/// - kinds 10 and 11 are the carrier objects the client uses for large
-///   map-break objectives, so they are environmental objects rather than
-///   characters
-/// - a character that is also a current group member is an allied player
+/// Only structurally certain results are published: a character that is also a
+/// current group member is an allied player, which needs no new client offset.
 ///
 /// Everything else stays unclassified. The client fields carrying the agent
 /// type, disposition, NPC rank and gathering discipline are not part of the
@@ -2841,6 +2839,14 @@ fn read_target(
 /// triggers fire on the wrong targets. An unclassified target publishes
 /// `Error::TargetState`/`Error::Affinity`, which keeps classification triggers
 /// inactive and shows the gap in the debug view instead of inventing a value.
+///
+/// The target descriptor `kind` tag is deliberately **not** mapped to a
+/// category. An earlier revision published `Gadget` for kinds 10 and 11 on the
+/// assumption that they are the large map-break carrier objects, but the first
+/// probe capture (2026-10-08, 13 selected targets) showed 10 of them were kind
+/// 10 or 11 while only 3 were kind 0, and some kind 10 targets exposed a valid
+/// character, agent and core-stats chain. Until the tag semantics are recovered,
+/// mapping it would mislabel ordinary targets.
 ///
 /// See [`log_target_classification_probe`] for how those offsets are recovered.
 fn read_target_classification(
@@ -2854,32 +2860,26 @@ fn read_target_classification(
 ) {
     let unclassified = (Err(Error::Affinity), Err(Error::TargetState));
 
-    match kind {
-        0 => {
-            let Some(character) = character else {
-                return unclassified;
-            };
-            // The group member table stores the member character pointers, so a
-            // direct match identifies the target as an allied player without
-            // needing any new client offset.
-            let is_group_member = read_group_characters(game, local)
-                .unwrap_or_default()
-                .iter()
-                .any(|(_, member)| *member == character);
-            if is_group_member {
-                (
-                    Ok(Affinity::Friendly),
-                    Ok(make_bitflags!(TargetCategory::{Player | Friendly})),
-                )
-            } else {
-                unclassified
-            }
-        }
-        10 | 11 => (
-            Err(Error::Affinity),
-            Ok(BitFlags::from(TargetCategory::Gadget)),
-        ),
-        _ => unclassified,
+    if kind != 0 {
+        return unclassified;
+    }
+    let Some(character) = character else {
+        return unclassified;
+    };
+    // The group member table stores the member character pointers, so a direct
+    // match identifies the target as an allied player without needing any new
+    // client offset.
+    let is_group_member = read_group_characters(game, local)
+        .unwrap_or_default()
+        .iter()
+        .any(|(_, member)| *member == character);
+    if is_group_member {
+        (
+            Ok(Affinity::Friendly),
+            Ok(make_bitflags!(TargetCategory::{Player | Friendly})),
+        )
+    } else {
+        unclassified
     }
 }
 
@@ -2887,10 +2887,10 @@ fn read_target_classification(
 /// of a newly selected target so the offsets for agent type, disposition, NPC
 /// rank and gathering discipline can be recovered.
 ///
-/// One dump is emitted per distinct target object, rate limited to 2 Hz. Select
-/// a target whose category is known in game (a champion, a legendary, an ore
-/// node, a chest, a grouped player, ...), then diff the dumps against each
-/// other: the offset whose value tracks the known category is the field to read.
+/// One dump is emitted per distinct target object, rate limited to 2 Hz, and
+/// carries a `seq` counter so a capture can be labelled afterwards. Select each
+/// target whose category is known in game, twice, in the documented order, then
+/// run `scripts/recovery/diff_target_classification.py` over the log.
 ///
 /// Remove this probe once the offsets are recovered and validated.
 fn log_target_classification_probe(
@@ -2903,6 +2903,7 @@ fn log_target_classification_probe(
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
     static LAST_OBJECT: AtomicUsize = AtomicUsize::new(0);
     static LAST_AT: AtomicU32 = AtomicU32::new(0);
+    static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
     if LAST_OBJECT.load(Ordering::Relaxed) == object {
         return;
@@ -2919,37 +2920,57 @@ fn log_target_classification_probe(
         return;
     }
     LAST_OBJECT.store(object, Ordering::Relaxed);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
 
     let agent = character.and_then(|character| pointer_at(game, character, CHARACTER_AGENT));
     let core = character.and_then(|character| pointer_at(game, character, CHARACTER_CORE_STATS));
     log::warn!(
-        "[reffect-target-classify] kind={kind} descriptor={descriptor:#x} object={object:#x} character={character:?} agent={agent:?} core={core:?}"
+        "[reffect-target-classify] seq={sequence} kind={kind} descriptor={descriptor:#x} object={object:#x} character={} agent={} core={}",
+        pointer_field(character),
+        pointer_field(agent),
+        pointer_field(core),
     );
-    log::warn!(
-        "[reffect-target-classify] descriptor[0x00..0x40]={}",
-        hexdump(game, descriptor, 0, PROBE_DESCRIPTOR_LEN)
-    );
-    log::warn!(
-        "[reffect-target-classify] object[0x00..0x80]={}",
-        hexdump(game, object, 0, PROBE_OBJECT_LEN)
-    );
-    if let Some(character) = character {
-        log::warn!(
-            "[reffect-target-classify] character[0x300..0x540]={}",
-            hexdump(game, character, PROBE_CHARACTER, PROBE_CHARACTER_LEN)
-        );
+
+    probe_region(game, "descriptor", descriptor, PROBE_DESCRIPTOR);
+    probe_region(game, "object", object, PROBE_OBJECT);
+
+    // `character` is `object - 0x48` regardless of kind, so it is only a real
+    // character for kind 0. Dumping it for the other kinds would only add noise
+    // from whatever happens to live at that offset in the heap.
+    if kind == 0 {
+        if let Some(character) = character {
+            probe_region(game, "character", character, PROBE_CHARACTER);
+        }
+        if let Some(core) = core {
+            probe_region(game, "core", core, PROBE_CORE_STATS);
+        }
+        if let Some(agent) = agent {
+            probe_region(game, "agent", agent, PROBE_AGENT);
+        }
     }
-    if let Some(core) = core {
-        log::warn!(
-            "[reffect-target-classify] core[0x000..0x180]={}",
-            hexdump(game, core, 0, PROBE_CORE_STATS_LEN)
-        );
+}
+
+/// Formats an optional pointer for the probe log as `0x...`/`None`.
+fn pointer_field(value: Option<usize>) -> String {
+    match value {
+        Some(value) => format!("{value:#x}"),
+        None => String::from("None"),
     }
-    if let Some(agent) = agent {
+}
+
+/// Logs one region as fixed size hexdump chunks, so a wide region stays
+/// greppable and a partially unmapped one reports where it ends.
+fn probe_region(game: &impl GameMemory, name: &str, base: usize, range: (usize, usize)) {
+    let (start, end) = range;
+    let mut offset = start;
+    while offset < end {
+        let len = PROBE_CHUNK.min(end - offset);
         log::warn!(
-            "[reffect-target-classify] agent[0x000..0x140]={}",
-            hexdump(game, agent, 0, PROBE_AGENT_LEN)
+            "[reffect-target-classify] {name}[{offset:#05x}..{:#05x}]={}",
+            offset + len,
+            hexdump(game, base, offset, len)
         );
+        offset += len;
     }
 }
 
@@ -4962,17 +4983,16 @@ mod tests {
         let (_, category) = read_target_classification(&memory, local, 0, None);
         assert!(matches!(category, Err(Error::TargetState)));
 
-        // Kinds 10 and 11 are the carrier objects used by map-break objectives.
-        for kind in [10, 11] {
+        // Kinds other than 0 stay unknown. An earlier revision mapped kinds 10
+        // and 11 to `Gadget`, but the first probe capture showed they cover
+        // ordinary targets too, so the tag is not mapped until it is understood.
+        for kind in [10, 11, 7] {
             let (_, category) = read_target_classification(&memory, local, kind, None);
-            assert!(matches!(
-                category,
-                Ok(flags) if flags == BitFlags::from(TargetCategory::Gadget)
-            ));
+            assert!(matches!(category, Err(Error::TargetState)));
         }
 
-        // Unknown kinds stay unknown.
-        let (_, category) = read_target_classification(&memory, local, 7, None);
+        // A group member is only recognised through the kind 0 character path.
+        let (_, category) = read_target_classification(&memory, local, 10, Some(member));
         assert!(matches!(category, Err(Error::TargetState)));
     }
 }
