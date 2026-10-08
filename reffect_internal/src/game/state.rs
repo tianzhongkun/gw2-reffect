@@ -276,10 +276,15 @@ const PROBE_AGENT: (usize, usize) = (0x000, 0x180);
 const PROBE_LIMIT: u32 = 256;
 /// Maximum strings logged per region by the probe.
 const PROBE_STRING_LIMIT: usize = 12;
-/// Wider ranges used by the one-shot local name calibration, which searches for
-/// a name that is known to exist rather than for anything name shaped.
-const PROBE_LOCAL_CHARACTER: (usize, usize) = (0x000, 0x800);
-const PROBE_LOCAL_AGENT: (usize, usize) = (0x000, 0x400);
+/// Ranges used by the one-shot local name calibration, which searches for a name
+/// that is known to exist rather than for anything name shaped. The character is
+/// wide enough to hold a name table reference, and the agent to reach past the
+/// position and velocity floats.
+const PROBE_LOCAL_CHARACTER: (usize, usize) = (0x000, 0x2000);
+const PROBE_LOCAL_AGENT: (usize, usize) = (0x000, 0x1000);
+const PROBE_LOCAL_CORE: (usize, usize) = (0x000, 0x400);
+/// Bytes searched inside each pointer target by the second hop of the name search.
+const PROBE_NAME_INNER: usize = 0x200;
 
 /// Sequence of the target classification probe dump for the currently selected
 /// target; 0 when no target is selected or the probe limit was reached.
@@ -3119,12 +3124,20 @@ fn probe_local_name(game: &impl GameMemory, local: usize) {
         probe_name_match(game, "local-agent", agent, PROBE_LOCAL_AGENT, &name);
     }
     if let Some(core) = core {
-        probe_name_match(game, "local-core", core, PROBE_CORE_STATS, &name);
+        probe_name_match(game, "local-core", core, PROBE_LOCAL_CORE, &name);
     }
 }
 
-/// Logs every place `name` occurs in `[start, end)` at `base`: as the target of
-/// a pointer, and inline in either encoding.
+/// Searches `[start, end)` at `base` for `name` and logs every hit.
+///
+/// Three shapes are covered, because the client is free to keep the name in a
+/// table rather than on the character:
+///
+/// 1. inline in the region itself
+/// 2. at the target of a pointer in the region
+/// 3. inside the struct a pointer in the region points to
+///
+/// Each hit logs where it was found so the offset can be turned into a read.
 fn probe_name_match(
     game: &impl GameMemory,
     region: &str,
@@ -3133,27 +3146,55 @@ fn probe_name_match(
     name: &str,
 ) {
     let (start, end) = range;
+    let needles = name_needles(name);
+    let data = read_region_bytes(game, base, start, end);
+    log::warn!(
+        "[reffect-target-classify] region {region} readable {:#x}/{:#x}",
+        data.len(),
+        end - start
+    );
+
+    for (encoding, needle) in &needles {
+        for index in find_all(&data, needle) {
+            log::warn!(
+                "[reffect-target-classify] name inline {region}+{:#05x} ({encoding})",
+                start + index
+            );
+        }
+    }
 
     let mut offset = start;
     while offset + size_of::<usize>() <= end {
-        if let Some(pointer) = value_at::<usize>(game, base, offset)
-            && valid_pointer(pointer)
-        {
-            for wide in [false, true] {
-                if read_text(game, pointer, wide).as_deref() == Some(name) {
-                    log::warn!(
-                        "[reffect-target-classify] name pointer {region}+{offset:#05x} -> {pointer:#x} (wide={wide})"
-                    );
-                }
+        let Some(pointer) = value_at::<usize>(game, base, offset).filter(|p| valid_pointer(*p))
+        else {
+            offset += size_of::<usize>();
+            continue;
+        };
+
+        for (wide, encoding) in [(false, "ascii"), (true, "utf16")] {
+            if read_text(game, pointer, wide).as_deref() == Some(name) {
+                log::warn!(
+                    "[reffect-target-classify] name pointer {region}+{offset:#05x} -> {pointer:#x} ({encoding})"
+                );
             }
         }
+
+        let inner = read_region_bytes(game, pointer, 0, PROBE_NAME_INNER);
+        for (encoding, needle) in &needles {
+            for index in find_all(&inner, needle) {
+                log::warn!(
+                    "[reffect-target-classify] name {region}+{offset:#05x} -> {pointer:#x}+{index:#05x} ({encoding})"
+                );
+            }
+        }
+
         offset += size_of::<usize>();
     }
+}
 
-    let Some(data) = read_region_bytes(game, base, start, end) else {
-        return;
-    };
-    let needles = [
+/// Returns the name encoded as single byte characters and as UTF-16LE.
+fn name_needles(name: &str) -> [(&'static str, Vec<u8>); 2] {
+    [
         ("ascii", name.as_bytes().to_vec()),
         (
             "utf16",
@@ -3161,46 +3202,45 @@ fn probe_name_match(
                 .flat_map(u16::to_le_bytes)
                 .collect::<Vec<u8>>(),
         ),
-    ];
-    for (encoding, needle) in needles {
-        if needle.is_empty() {
-            continue;
-        }
-        let mut from = 0;
-        while from + needle.len() <= data.len() {
-            match data[from..]
-                .windows(needle.len())
-                .position(|window| window == needle)
-            {
-                Some(index) => {
-                    let absolute = from + index;
-                    log::warn!(
-                        "[reffect-target-classify] name inline {region}+{:#05x} ({encoding})",
-                        start + absolute
-                    );
-                    from = absolute + 1;
-                }
-                None => break,
-            }
-        }
-    }
+    ]
 }
 
-/// Reads `[start, end)` at `base` as bytes, `None` when any word is unreadable.
-fn read_region_bytes(
-    game: &impl GameMemory,
-    base: usize,
-    start: usize,
-    end: usize,
-) -> Option<Vec<u8>> {
+/// Returns every offset at which `needle` occurs in `haystack`.
+fn find_all(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
+    let mut hits = Vec::new();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return hits;
+    }
+
+    let mut from = 0;
+    while from + needle.len() <= haystack.len() {
+        match haystack[from..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+        {
+            Some(index) => {
+                hits.push(from + index);
+                from += index + 1;
+            }
+            None => break,
+        }
+    }
+    hits
+}
+
+/// Reads `[start, end)` at `base` as bytes, stopping at the first unreadable
+/// word so a partially mapped struct is still searched instead of skipped.
+fn read_region_bytes(game: &impl GameMemory, base: usize, start: usize, end: usize) -> Vec<u8> {
     let mut data = Vec::with_capacity(end - start);
     let mut offset = start;
     while offset < end {
-        let word = value_at::<u32>(game, base, offset)?;
+        let Some(word) = value_at::<u32>(game, base, offset) else {
+            break;
+        };
         data.extend_from_slice(&word.to_le_bytes());
         offset += 4;
     }
-    Some(data)
+    data
 }
 
 /// Formats an optional pointer for the probe log as `0x...`/`None`.
@@ -5217,6 +5257,24 @@ mod tests {
 
         let buff = buffs.get(&9283).expect("long-duration effect is published");
         assert!(buff.is_infinite());
+    }
+
+    #[test]
+    fn find_all_reports_every_occurrence() {
+        assert_eq!(find_all(b"ababab", b"ab"), vec![0, 2, 4]);
+        assert_eq!(find_all(b"abc", b"z"), Vec::<usize>::new());
+        assert_eq!(find_all(b"abc", b""), Vec::<usize>::new());
+        assert_eq!(find_all(b"ab", b"abc"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn name_needles_encodes_both_representations() {
+        let [ascii, utf16] = name_needles("鹏霄");
+
+        assert_eq!(ascii.0, "ascii");
+        assert_eq!(ascii.1, "鹏霄".as_bytes());
+        assert_eq!(utf16.0, "utf16");
+        assert_eq!(utf16.1, vec![0x4f, 0x9e, 0x04, 0x97]);
     }
 
     #[test]
