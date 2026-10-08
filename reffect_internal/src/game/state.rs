@@ -289,6 +289,10 @@ const AGENT_TYPE_GADGET_ATTACK_TARGET: u32 = 11;
 
 /// Gadget type on a gadget agent entry.
 const GADGET_TYPE: usize = 0x40;
+/// Training dummies and siege practice targets. Attackable, like an attack
+/// target, even though the client files it as a destructible rather than an
+/// attack target.
+const GADGET_TYPE_DESTRUCTIBLE: u32 = 1;
 const GADGET_TYPE_ATTACK_TARGET: u32 = 16;
 const GADGET_TYPE_RESOURCE_NODE: u32 = 19;
 
@@ -654,6 +658,8 @@ struct TargetSnapshot {
     position: Result<[f32; 3], Error>,
     /// Distance from the player when both positions are readable.
     distance: Result<f32, Error>,
+    /// Raw gadget type when the target is a gadget.
+    gadget_type: Result<u32, Error>,
     /// Resources when readable, or 'Error::TargetState' when the resolved
     /// character carries no health object (large map-break gadgets).
     resources: Result<CombatantResources, Error>,
@@ -816,6 +822,7 @@ impl RuntimeSnapshot {
                 context.target.category = target.category;
                 context.target.position = target.position;
                 context.target.distance = target.distance;
+                context.target.gadget_type = target.gadget_type;
                 context.target.resources = target.resources;
                 context.target.buffs = target.buffs;
             }
@@ -2899,6 +2906,11 @@ fn read_target(
         let player = read_position(game, pointer_at(game, local, CHARACTER_AGENT)?)?;
         Some(distance_between(player, position))
     });
+    let gadget_type = if kind == AGENT_TYPE_GADGET {
+        value_at::<u32>(game, descriptor, GADGET_TYPE).ok_or(Error::TargetState)
+    } else {
+        Err(Error::TargetState)
+    };
     let (health, barrier_layout, container, defiance) = match kind {
         0 => (
             character.and_then(|character| pointer_at(game, character, CHARACTER_HEALTH)),
@@ -2950,6 +2962,7 @@ fn read_target(
         category,
         position: position.ok_or(Error::TargetState),
         distance: distance.ok_or(Error::TargetState),
+        gadget_type,
         resources,
         buffs,
     })
@@ -3118,9 +3131,11 @@ fn read_gadget_classification(
             };
             (Err(Error::Affinity), category)
         }
-        // A gadget attack target is a world boss prop or a destructible
-        // structure: hostile, but not a creature.
-        Some(GADGET_TYPE_ATTACK_TARGET) => (
+        // Attack targets and destructibles are hostile structures rather than
+        // creatures. Other gadget types stay a plain object: whether a prop,
+        // door or point is worth attacking depends on the situation, so the raw
+        // type is published for the consumer to decide.
+        Some(GADGET_TYPE_ATTACK_TARGET | GADGET_TYPE_DESTRUCTIBLE) => (
             Ok(Affinity::Hostile),
             make_bitflags!(TargetCategory::{AttackTarget | Hostile}),
         ),
@@ -5826,6 +5841,16 @@ mod tests {
         ));
 
         memory.u32(agent + GADGET_TYPE, GADGET_TYPE_ATTACK_TARGET);
+        let (affinity, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_GADGET, agent, None);
+        assert!(matches!(affinity, Ok(Affinity::Hostile)));
+        assert!(matches!(
+            category,
+            Ok(flags) if flags == make_bitflags!(TargetCategory::{AttackTarget | Hostile})
+        ));
+
+        // A destructible, such as a training dummy, is attackable too.
+        memory.u32(agent + GADGET_TYPE, GADGET_TYPE_DESTRUCTIBLE);
         let (affinity, category) =
             read_target_classification(&memory, local, AGENT_TYPE_GADGET, agent, None);
         assert!(matches!(affinity, Ok(Affinity::Hostile)));

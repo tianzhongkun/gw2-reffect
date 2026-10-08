@@ -217,6 +217,8 @@ pub struct RfSnapshot {
     pub target_position: [f32; 3],
     /// Distance from the player in game units, `-1.0` when unknown.
     pub target_distance: f32,
+    /// Raw gadget type, 0 when the target is not a gadget or is unknown.
+    pub target_gadget_type: u32,
     pub target: RfCombatant,
     pub target_buff_count: u32,
     pub target_buffs: [RfBuff; RF_MAX_BUFFS],
@@ -292,6 +294,7 @@ pub fn fill_snapshot(out: &mut RfSnapshot, ctx: &Context) {
     };
     out.target_position = ctx.target.position.as_ref().copied().unwrap_or([0.0; 3]);
     out.target_distance = ctx.target.distance.as_ref().copied().unwrap_or(-1.0);
+    out.target_gadget_type = ctx.target.gadget_type.as_ref().copied().unwrap_or(0);
     out.player_position = ctx.player.position.as_ref().copied().unwrap_or([0.0; 3]);
     if let Ok(target_buffs) = &ctx.target.buffs {
         out.target_buff_count = fill_buffs(&mut out.target_buffs, target_buffs, ctx.now);
@@ -602,7 +605,7 @@ mod tests {
             ("RfBuild", std::mem::size_of::<RfBuild>(), 128),
             ("RfGear", std::mem::size_of::<RfGear>(), 24),
             ("RfGroupMember", std::mem::size_of::<RfGroupMember>(), 1568),
-            ("RfSnapshot", std::mem::size_of::<RfSnapshot>(), 12404),
+            ("RfSnapshot", std::mem::size_of::<RfSnapshot>(), 12408),
         ];
         for (name, size, expected) in sizes {
             assert_eq!(size, expected, "{name} changed size");
@@ -620,7 +623,8 @@ mod tests {
         assert_eq!(std::mem::offset_of!(RfSnapshot, target_category), 4540);
         assert_eq!(std::mem::offset_of!(RfSnapshot, target_position), 4544);
         assert_eq!(std::mem::offset_of!(RfSnapshot, target_distance), 4556);
-        assert_eq!(std::mem::offset_of!(RfSnapshot, target), 4560);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target_gadget_type), 4560);
+        assert_eq!(std::mem::offset_of!(RfSnapshot, target), 4564);
 
         // `RfCombatant::health_state` precedes `defiance` in both mirrors.
         assert_eq!(std::mem::offset_of!(RfCombatant, health_state), 16);

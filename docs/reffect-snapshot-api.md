@@ -54,6 +54,7 @@ without any further memory reading:
 | `target_position[3]` | Target world position |
 | `player_position[3]` | Player world position |
 | `target_distance` | Distance between the two, `-1.0` when either is unknown |
+| `target_gadget_type` | Raw gadget type for gadget targets, `0` otherwise |
 
 `target_kind` is the kind axis of `target_category` reduced to one byte, so a
 consumer that only needs to decide whether a target is worth attacking can
@@ -77,6 +78,19 @@ discipline, and `RF_CAT_HOSTILE` / `RF_CAT_NEUTRAL` / `RF_CAT_FRIENDLY` for the
 disposition. A target the reader could not classify reports
 `RF_TARGET_UNKNOWN`, `target_category == 0` and `target_distance == -1.0`, so a
 consumer that requires a classification stays inactive rather than guessing.
+
+Many objects that the client files as plain gadgets are still worth attacking: a
+supply depot, a gate or a PvP control point all report `RF_TARGET_GADGET`, while
+a gathering node never does. `target_gadget_type` carries the raw type so the
+consumer can decide, using the `RF_GADGET_*` constants. Only the attack target
+and destructible types are promoted to `RF_TARGET_ATTACK_TARGET` automatically:
+
+```c
+int attackable = snap->target_kind == RF_TARGET_MONSTER ||
+                 snap->target_kind == RF_TARGET_ATTACK_TARGET ||
+                 (snap->target_kind == RF_TARGET_GADGET &&
+                  snap->target_gadget_type == RF_GADGET_PROP);
+```
 
 The distance is in the game's own units, the same ones skill ranges use: a
 skill with a 900 range reaches a target whose `target_distance` is 900 or less.

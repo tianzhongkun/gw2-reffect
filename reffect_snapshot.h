@@ -46,6 +46,31 @@ extern "C" {
 #define RF_TARGET_GADGET        7   /* other environmental object */
 #define RF_TARGET_PET           8
 
+/* Raw gadget types, published in `target_gadget_type`.
+ *
+ * Several of these classify as RF_TARGET_GADGET, and which are worth attacking
+ * depends on the situation, so the raw type is exposed for the consumer to
+ * decide. The attack target and destructible types already report
+ * RF_TARGET_ATTACK_TARGET.
+ */
+#define RF_GADGET_DESTRUCTIBLE   1   /* training dummy, siege practice target */
+#define RF_GADGET_POINT          2   /* PvP control point, event spawn */
+#define RF_GADGET_GENERIC        3
+#define RF_GADGET_CRAFTING       5
+#define RF_GADGET_DOOR           6   /* interactive door, gate */
+#define RF_GADGET_BOUNTY_BOARD   11
+#define RF_GADGET_INTERACT       12  /* chests, portals */
+#define RF_GADGET_RIFT           13
+#define RF_GADGET_PLAYER_SPECIFIC 14
+#define RF_GADGET_ATTACK_TARGET  16  /* world boss, fort wall */
+#define RF_GADGET_MAP_PORTAL     17
+#define RF_GADGET_WAYPOINT       18
+#define RF_GADGET_RESOURCE_NODE  19  /* gathering node, cache */
+#define RF_GADGET_PROP           20  /* supply depot, anvil, jump pad */
+#define RF_GADGET_PLAYER_CREATED 23  /* turret, siege, banner */
+#define RF_GADGET_VISTA          24
+#define RF_GADGET_BUILD_SITE     25
+
 /* A current/max resource pair. */
 typedef struct RfResource {
     float current;
@@ -210,6 +235,10 @@ typedef struct RfSnapshot {
      * 900 or less. */
     float target_position[3];
     float target_distance;
+
+    /* Raw gadget type, 0 when the target is not a gadget or is unknown. See the
+     * RF_GADGET_* constants. */
+    uint32_t target_gadget_type;
 
     RfCombatant target;
     uint32_t target_buff_count;

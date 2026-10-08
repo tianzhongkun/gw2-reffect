@@ -128,6 +128,7 @@ class RfSnapshot(C.Structure):
         ("target_category", C.c_uint32),
         ("target_position", C.c_float * 3),
         ("target_distance", C.c_float),
+        ("target_gadget_type", C.c_uint32),
         ("target", RfCombatant),
         ("target_buff_count", C.c_uint32),
         ("target_buffs", RfBuff * 96),

@@ -114,6 +114,13 @@ impl Addon {
                     Err(err) => ui.text_colored(colors::RED, err.to_string()),
                 }
 
+                ui.text("Target gadget type:");
+                ui.same_line();
+                match &ctx.target.gadget_type {
+                    Ok(gadget_type) => ui.text(format!("{gadget_type}")),
+                    Err(_) => ui.text("-"),
+                }
+
                 render_target_probe(ui);
 
                 ui.text(format!("Map id: {}", ctx.map.id));

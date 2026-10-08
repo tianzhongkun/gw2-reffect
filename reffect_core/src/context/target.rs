@@ -24,6 +24,16 @@ pub struct TargetInfo {
     /// Distance from the player in game units, when both positions are known.
     pub distance: Result<f32, Error>,
 
+    /// Raw gadget type of the target, when the target is a gadget.
+    ///
+    /// The client distinguishes many object types that all classify as
+    /// [`TargetCategory::Gadget`], and which of them are worth attacking depends
+    /// on the situation: a destructible or an attack target object always is,
+    /// while a gathering node never is and a prop may be. The value is published
+    /// raw so a consumer can decide for itself; see the `RF_GADGET_*` constants
+    /// in `reffect_snapshot.h`.
+    pub gadget_type: Result<u32, Error>,
+
     /// Generic combatant resources.
     pub resources: Result<CombatantResources, Error>,
 
@@ -39,6 +49,7 @@ impl TargetInfo {
             category: Err(Error::Disabled),
             position: Err(Error::Disabled),
             distance: Err(Error::Disabled),
+            gadget_type: Err(Error::Disabled),
             resources: Err(Error::Disabled),
             buffs: Err(Error::Disabled),
         }
@@ -53,6 +64,7 @@ impl TargetInfo {
             })),
             position: Ok([0.0; 3]),
             distance: Ok(0.0),
+            gadget_type: Err(Error::TargetState),
             resources: Ok(CombatantResources::empty()),
             buffs: Ok(BuffMap::new()),
         }
@@ -64,6 +76,7 @@ impl TargetInfo {
         self.category = Err(error.clone());
         self.position = Err(error.clone());
         self.distance = Err(error.clone());
+        self.gadget_type = Err(error.clone());
         self.resources = Err(error.clone());
         self.buffs = Err(error);
     }
