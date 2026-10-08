@@ -74,16 +74,28 @@ are `Wood` and harvesting nodes are `Plant`.
 
 Selecting nothing keeps the trigger inactive.
 
-**What is currently classified:** a grouped player (`Player`, `Ally`), a chest
-(`Chest`), a gathering node (`Gatherable`) and an Epic world boss
-(`Monster`, `Hostile`, `Epic`). Everything else leaves the trigger inactive
-rather than guessing, and the debug window shows the current classification.
+**What is classified:**
 
-**Not recovered yet:** the NPC rank of ordinary monsters, the disposition of
-non-player targets and the gathering discipline (ore / wood / plant). The rank is
-conveyed to the player as the "Veteran"/"Champion"/... name prefix, and no field
-in the character, agent or core stats carries it, so it is expected to live on a
-shared species record. See
+- a player is recognised by its profession (`1..=9`; non-player characters report
+  `Profession::End`) or by membership of the current group
+- a character's disposition comes from its attitude field and its rank from the
+  rank flag bits: `Veteran`, `Elite`, `Champion` and `Legendary` are published,
+  a character with no rank flag is `Normal` and a level-less one is `Ambient`
+- a gadget's gadget type splits gathering nodes from other objects, and a
+  resource node's node type gives the gathering discipline: `Ore` (mining),
+  `Wood` (logging), `Plant` (harvesting) or `Chest` for a cache
+- an attack target gadget is published as `Gadget` with `Hostile`
+
+A target that cannot be classified leaves the trigger inactive instead of
+guessing, and the debug window shows the current classification.
+
+**Not published:** `Epic`. Epic world bosses appear as attack target gadgets, but
+so do destructible structures like fort walls, and nothing in the object
+distinguishes them.
+
+The offsets behind this were cross-checked against our own labelled captures and
+against the published struct layout of the open source
+[kx-vision](https://github.com/kxtools/kx-vision) addon. See
 [the recovery plan](./superpowers/plans/2026-10-08-target-classification-recovery.md).
 
 [NPC rank]: https://wiki.guildwars2.com/wiki/NPC_rank

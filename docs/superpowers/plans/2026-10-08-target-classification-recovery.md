@@ -87,20 +87,44 @@ character 0x00114   normal=0x0  veteran=0x0  legendary=0x1d7
 后两个是指针高 32 位（堆 arena），是噪声。`0x288` 只有两个取值，而且它在两次会话之间
 不一致（上一次 normal=2、veteran=5），所以也不是等级。
 
-结论：**等级不在这三个结构的这些范围内**。等级是通过名字前缀（"Veteran …"）告诉玩家的，
-所以它更可能属于**共享的物种记录**，而不是每个实例上。这也是为什么名称仍然是关键。
+> ⚠️ **这个「否定结果」是错的，原因值得记住。** 真正的等级字段是
+> `character + 0x264`，一个**位掩码**（不是小枚举）。我的分析脚本里有一条
+> `max(values) < 0x10000` 的启发式过滤，把 `0x20800000` 这种位掩码直接滤掉了；
+> 而且我在看到位掩码时判断「这是 flags，不是干净的等级枚举」，于是主动放弃。
+> **教训：不要用「值必须小」来过滤，位掩码也是合法表示。**
 
-**同时确认并已经写进读取器的分类：**
+## 最终答案：偏移来自 kx-vision，并用我们自己的样本逐条验证
 
-| 判定 | 依据 |
-| --- | --- |
-| kind 10 + `descriptor + 0x40 == 0x0e` → `Chest` | 2 只不同的宝箱 |
-| kind 10 + `descriptor + 0x40 == 0x13` → `Gatherable` | 6 个不同的采集点（矿/树/草都有） |
-| kind 11 → `Monster + Hostile + Epic` | 4 个样本、2 次会话、2 只不同的世界 boss |
-| kind 0 + 队伍成员 → `Player + Friendly` | 队伍成员表 |
+用户指出开源项目 [kx-vision](https://github.com/kxtools/kx-vision) 已经有分类。
+它的 `src/Game/GameEnums.h` 和 `src/Game/SDK/*Structs.h` 给出了完整的枚举和偏移。
+**只采用偏移与枚举值（事实），实现是自己写的**；并且凡是能用我们自己的标注样本验证的，
+都验证过了：
 
-`descriptor + 0x40` 在 6 个不同采集点上都取 `0x13`、2 个不同宝箱上都取 `0x0e`，
-说明它是**类型级**字段而不是每实例字段——这一点很关键，否则不会采用。
+| 字段 | 路径 | 验证情况 |
+| --- | --- | --- |
+| 阵营 Attitude | `character + 0xC0` | ✅ 14 个样本：neutral→2、所有红名→1、友好 NPC→0/3 |
+| 等级 RankFlags | `character + 0x264`（位掩码） | ✅ **14 个样本全中**：veteran→`1<<29`、champion→`1<<1`、elite→`1<<5`、legendary→`1<<11`、normal→无 |
+| agent 类型 | `agent + 0x08` | ✅ 与我们的 `kind` 一致：0 角色 / 10 Gadget / 11 GadgetAttackTarget / 15 Item |
+| 职业（区分玩家） | `core + 0x12C` | ✅ 所有标注的怪和 NPC 都是 `10`（`Profession::End`），一个未标注的玩家是 `6` |
+| Gadget 类型 | `agent + 0x40` | ✅ 6 个采集点全是 `0x13`=ResourceNode(19)；我原先当成宝箱的 `0x0e` 其实是 PlayerSpecific(14) |
+| 采集专业 | `GdCliGadget + 0x4EC`（经 `agent + 0xB8`） | ⚠️ 仅来自 kx-vision：Plant=0 / Tree=1 / Rock=2 / Quest=3 / Cache=6 |
+| 等级（判断 ambient） | `core + 0xAC` | ⚠️ 仅来自 kx-vision |
+
+**kx-vision 有一处结论和我们的数据不符**：它把 `1 << 23` 当作 `Ambient`，并且 `GetRank()`
+在返回 Normal 之前先检查 Ambient。但我们的样本里**每一个** character 都带 `1 << 23`
+（normal / veteran / champion / elite / legendary / npc 全都有），所以 `1 << 23` 不可能是
+「环境生物」，否则所有怪都会被判成 Ambient。本实现因此**不采用**这个位，改用
+`core + 0xAC == 0`（环境生物没有等级）来判断 Ambient。
+
+**仍然不发布的**：`Epic`。世界 boss 表现为 `GadgetAttackTarget`(11) 的 prop 物件，
+但城墙之类可破坏结构也是同一类，物件本身区分不出来。
+
+### 许可证说明
+
+kx-vision 是 **GPL-3.0**，本项目是 **LGPL-3.0**。这里只使用了**逆向得到的偏移与枚举数值**
+（事实性数据，业界通行做法），代码为本项目自行编写，未复制 kx-vision 的任何代码。
+如果不希望参考该项目，请告知，可以改回只保留我们自行验证过的字段。
+
 
 ## 探针
 

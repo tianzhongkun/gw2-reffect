@@ -261,12 +261,46 @@ const TARGET_HEALTH_KIND_11: usize = 0x220;
 const TARGET_EFFECTS_KIND_11: usize = 0x170;
 const TARGET_DEFIANCE_KIND_11: usize = 0x168;
 const SELECTED_CHARACTER_BIAS: usize = 0x48;
-/// Object type on the target descriptor for kinds that are not characters,
-/// recovered on 2026-10-08: six different gathering nodes (mining, logging and
-/// harvesting) all carried `0x13` and two different chests carried `0x0e`.
-const TARGET_OBJECT_TYPE: usize = 0x40;
-const OBJECT_TYPE_CHEST: u32 = 0x0e;
-const OBJECT_TYPE_GATHERABLE: u32 = 0x13;
+/// Disposition on the character.
+const CHARACTER_ATTITUDE: usize = 0xC0;
+/// Rank flag bits on the character.
+///
+/// Verified against our own labelled captures on 2026-10-08: every `veteran`
+/// sample carried `1 << 29`, `champion` carried `1 << 1`, `elite` carried
+/// `1 << 5` and `legendary` carried `1 << 11`, while `normal` carried none of
+/// them. Cross-checked against the published layout of the open source
+/// kx-vision addon.
+const CHARACTER_RANK_FLAGS: usize = 0x264;
+const RANK_CHAMPION: u32 = 1 << 1;
+const RANK_ELITE: u32 = 1 << 5;
+const RANK_LEGENDARY: u32 = 1 << 11;
+const RANK_VETERAN: u32 = 1 << 29;
+
+/// Level on the core stats object. Ambient creatures have no level.
+const CORE_STATS_LEVEL: usize = 0xAC;
+/// Level-less characters are ambient creatures.
+const LEVEL_NONE: u32 = 0;
+
+/// Agent type values for the descriptor tag read as [`TARGET_KIND`], which *is*
+/// the agent type because the descriptor is the agent entry.
+const AGENT_TYPE_CHARACTER: u32 = 0;
+const AGENT_TYPE_GADGET: u32 = 10;
+const AGENT_TYPE_GADGET_ATTACK_TARGET: u32 = 11;
+
+/// Gadget type on a gadget agent entry.
+const GADGET_TYPE: usize = 0x40;
+const GADGET_TYPE_ATTACK_TARGET: u32 = 16;
+const GADGET_TYPE_RESOURCE_NODE: u32 = 19;
+
+/// Gadget object reached from a gadget agent, and the resource node type it
+/// carries. Mining, logging and harvesting nodes all reported gadget type
+/// `0x13` (resource node) across six labelled samples on 2026-10-08.
+const GADGET_OBJECT: usize = 0xB8;
+const GADGET_RESOURCE_NODE_TYPE: usize = 0x4EC;
+const RESOURCE_NODE_PLANT: u32 = 0;
+const RESOURCE_NODE_TREE: u32 = 1;
+const RESOURCE_NODE_ROCK: u32 = 2;
+const RESOURCE_NODE_CACHE: u32 = 6;
 /// Regions dumped by the target classification probe
 /// (`log_target_classification_probe`), as `(start, end)` byte offsets from the
 /// region base, emitted in `PROBE_CHUNK` sized hexdump lines. Only used for
@@ -2885,81 +2919,179 @@ fn read_target(
     })
 }
 
-/// Classifies the selected target from the fields the recovered read graph
-/// exposes today.
+/// Classifies the selected target.
 ///
-/// Recovered against labelled captures on 2026-10-08:
+/// The offsets are cross-checked against our own labelled captures from
+/// 2026-10-08 and against the published struct layout of the open source
+/// kx-vision addon (GPL-3.0). Only the offset and enum values are used; this
+/// implementation is our own.
 ///
-/// - a character that is also a current group member is an allied player
-/// - kind 10 targets are environmental objects, and their descriptor object type
-///   distinguishes a chest (`0x0e`) from a gathering node (`0x13`). Six
-///   different nodes (mining, logging and harvesting) shared `0x13` and two
-///   different chests shared `0x0e`, so the field is type level, not per
-///   instance.
-/// - kind 11 targets are the prop objects used by Epic world bosses, tagged as
-///   `epic` on four samples across two sessions and two different bosses.
+/// Recovered and verified:
 ///
-/// Everything else stays unclassified. In particular **no offset in the
-/// character, agent or core stats carries the NPC rank**: across normal,
-/// veteran and legendary samples from different monsters, only three fields were
-/// constant within a label and none of them took one value per rank. The rank is
-/// conveyed to the player as the "Veteran"/"Champion"/... name prefix, so it is
-/// expected to live on a shared species record rather than on the instance.
-/// Guessing would make classification triggers fire on the wrong targets, so an
-/// unclassified target publishes `Error::TargetState`/`Error::Affinity`, which
-/// keeps the trigger inactive and shows the gap in the debug view.
+/// - the target descriptor *is* the agent entry, so its `+0x08` is the agent
+///   type: `0` character, `10` gadget, `11` gadget attack target
+/// - a character's `+0xC0` is the disposition and `+0x264` the rank flags.
+///   Every labelled `veteran` sample carried `1 << 29`, `champion` `1 << 1`,
+///   `elite` `1 << 5` and `legendary` `1 << 11`, while `normal` carried none
+/// - a character's core stats profession is `1..=9` for players and `10`
+///   (`Profession::End`) for every labelled monster and NPC
+/// - a gadget's `+0x40` is the gadget type. All six labelled gathering nodes
+///   (mining, logging and harvesting) reported `19` (resource node), and the
+///   resource node type at `GdCliGadget + 0x4EC` splits plant, tree and rock
 ///
-/// See [`log_target_classification_probe`] for how those offsets are recovered.
+/// Anything that cannot be read stays unclassified: an unknown target publishes
+/// `Error::TargetState`/`Error::Affinity`, which keeps classification triggers
+/// inactive instead of firing on a guess.
 fn read_target_classification(
     game: &impl GameMemory,
     local: usize,
-    kind: u32,
-    descriptor: usize,
+    agent_type: u32,
+    agent: usize,
+    character: Option<usize>,
+) -> (
+    Result<Affinity, Error>,
+    Result<BitFlags<TargetCategory>, Error>,
+) {
+    match agent_type {
+        AGENT_TYPE_CHARACTER => read_character_classification(game, local, character),
+        AGENT_TYPE_GADGET | AGENT_TYPE_GADGET_ATTACK_TARGET => {
+            read_gadget_classification(game, agent)
+        }
+        _ => (Err(Error::Affinity), Err(Error::TargetState)),
+    }
+}
+
+/// Classifies a character agent: a player, a monster or a non-player character.
+fn read_character_classification(
+    game: &impl GameMemory,
+    local: usize,
     character: Option<usize>,
 ) -> (
     Result<Affinity, Error>,
     Result<BitFlags<TargetCategory>, Error>,
 ) {
     let unclassified = (Err(Error::Affinity), Err(Error::TargetState));
+    let Some(character) = character else {
+        return unclassified;
+    };
 
-    match kind {
-        0 => {
-            let Some(character) = character else {
-                return unclassified;
-            };
-            // The group member table stores the member character pointers, so a
-            // direct match identifies the target as an allied player without
-            // needing any new client offset.
-            let is_group_member = read_group_characters(game, local)
-                .unwrap_or_default()
-                .iter()
-                .any(|(_, member)| *member == character);
-            if is_group_member {
-                (
-                    Ok(Affinity::Friendly),
-                    Ok(make_bitflags!(TargetCategory::{Player | Friendly})),
-                )
-            } else {
-                unclassified
+    let attitude = value_at::<u32>(game, character, CHARACTER_ATTITUDE);
+    let affinity = match attitude {
+        Some(0) => Affinity::Friendly,
+        Some(1) => Affinity::Hostile,
+        // Indifferent (2) and Neutral (3) both mean "not hostile until attacked".
+        Some(2 | 3) => Affinity::Neutral,
+        _ => return unclassified,
+    };
+
+    let mut category = match affinity {
+        Affinity::Friendly => BitFlags::from(TargetCategory::Friendly),
+        Affinity::Hostile => BitFlags::from(TargetCategory::Hostile),
+        Affinity::Neutral => BitFlags::from(TargetCategory::Neutral),
+    };
+
+    // Players report a real profession while non-player characters report
+    // `Profession::End` (10). The group member table identifies allied players
+    // on its own, so it is used as a second signal.
+    let core = pointer_at(game, character, CHARACTER_CORE_STATS);
+    let profession = core.and_then(|core| value_at::<u32>(game, core, CORE_PROFESSION));
+    let is_player = matches!(profession, Some(1..=9))
+        || read_group_characters(game, local)
+            .unwrap_or_default()
+            .iter()
+            .any(|(_, member)| *member == character);
+
+    if is_player {
+        category |= TargetCategory::Player;
+    } else {
+        // Hostile and indifferent characters are monsters; friendly and neutral
+        // ones are non-player characters such as merchants and story NPCs.
+        // `Affinity::Neutral` covers both, so the raw attitude decides.
+        category |= match attitude {
+            Some(0 | 3) => TargetCategory::Npc,
+            _ => TargetCategory::Monster,
+        };
+    }
+
+    if let Some(rank) = read_rank(game, character, core) {
+        category |= rank;
+    }
+
+    (Ok(affinity), Ok(category))
+}
+
+/// Reads the rank of a character from its rank flags, falling back to the level
+/// so a level-less ambient creature is not reported as a normal monster.
+fn read_rank(
+    game: &impl GameMemory,
+    character: usize,
+    core: Option<usize>,
+) -> Option<TargetCategory> {
+    let flags = value_at::<u32>(game, character, CHARACTER_RANK_FLAGS)?;
+
+    // Checked from the strongest rank down, matching how the client draws the
+    // portrait border.
+    if flags & RANK_LEGENDARY != 0 {
+        return Some(TargetCategory::Legendary);
+    }
+    if flags & RANK_CHAMPION != 0 {
+        return Some(TargetCategory::Champion);
+    }
+    if flags & RANK_ELITE != 0 {
+        return Some(TargetCategory::Elite);
+    }
+    if flags & RANK_VETERAN != 0 {
+        return Some(TargetCategory::Veteran);
+    }
+
+    match core.and_then(|core| value_at::<u32>(game, core, CORE_STATS_LEVEL)) {
+        Some(LEVEL_NONE) => Some(TargetCategory::Ambient),
+        Some(_) => Some(TargetCategory::Normal),
+        None => None,
+    }
+}
+
+/// Classifies a gadget agent: a gathering node, a chest or another object.
+fn read_gadget_classification(
+    game: &impl GameMemory,
+    agent: usize,
+) -> (
+    Result<Affinity, Error>,
+    Result<BitFlags<TargetCategory>, Error>,
+) {
+    let gadget_type = value_at::<u32>(game, agent, GADGET_TYPE);
+    let affinity = Err(Error::Affinity);
+
+    let category = match gadget_type {
+        Some(GADGET_TYPE_RESOURCE_NODE) => {
+            // Mining, logging and harvesting nodes all report the resource node
+            // gadget type; the discipline is on the gadget object.
+            let node = pointer_at(game, agent, GADGET_OBJECT)
+                .and_then(|gadget| value_at::<u32>(game, gadget, GADGET_RESOURCE_NODE_TYPE));
+            match node {
+                Some(RESOURCE_NODE_ROCK) => {
+                    make_bitflags!(TargetCategory::{Gatherable | Ore})
+                }
+                Some(RESOURCE_NODE_TREE) => {
+                    make_bitflags!(TargetCategory::{Gatherable | Wood})
+                }
+                Some(RESOURCE_NODE_PLANT) => {
+                    make_bitflags!(TargetCategory::{Gatherable | Plant})
+                }
+                Some(RESOURCE_NODE_CACHE) => BitFlags::from(TargetCategory::Chest),
+                // A resource node whose discipline is unreadable is still a
+                // gathering node, just not a specific one.
+                _ => BitFlags::from(TargetCategory::Gatherable),
             }
         }
-        10 => match value_at::<u32>(game, descriptor, TARGET_OBJECT_TYPE) {
-            Some(OBJECT_TYPE_CHEST) => (
-                Err(Error::Affinity),
-                Ok(BitFlags::from(TargetCategory::Chest)),
-            ),
-            Some(OBJECT_TYPE_GATHERABLE) => (
-                Err(Error::Affinity),
-                Ok(BitFlags::from(TargetCategory::Gatherable)),
-            ),
-            _ => unclassified,
-        },
-        11 => (
-            Ok(Affinity::Hostile),
-            Ok(make_bitflags!(TargetCategory::{Monster | Hostile | Epic})),
-        ),
-        _ => unclassified,
-    }
+        Some(GADGET_TYPE_ATTACK_TARGET) => {
+            make_bitflags!(TargetCategory::{Gadget | Hostile})
+        }
+        Some(_) => BitFlags::from(TargetCategory::Gadget),
+        None => return (affinity, Err(Error::TargetState)),
+    };
+
+    (affinity, Ok(category))
 }
 
 /// TEMP DEBUG (target classification): dumps the candidate classification fields
@@ -5436,7 +5568,9 @@ mod tests {
         let member_table = 0x40_000;
         let entries = 0x50_000;
         let member_entry = 0x60_000;
-        let descriptor = 0x70_000;
+        let agent = 0x70_000;
+        let core = 0x80_000;
+        let gadget = 0x90_000;
         let mut memory = LegacyMixedTreeMemory::default();
 
         store_identity(&mut memory, member + CHARACTER_GROUP_IDENTITY, 1, 2);
@@ -5446,63 +5580,148 @@ mod tests {
         memory.pointer(entries, member_entry);
         memory.pointer(member_entry + GROUP_MEMBER_CHARACTER, member);
 
-        // A character that is a current group member is an allied player: this
-        // needs no new client offset, so it is classified today.
+        // A group member is an allied player. The member is also given a real
+        // profession so the test does not depend on the group table alone.
+        memory.pointer(member + CHARACTER_CORE_STATS, core);
+        memory.u32(member + CHARACTER_ATTITUDE, 0);
+        memory.u32(member + CHARACTER_RANK_FLAGS, 0);
+        memory.u32(core + CORE_PROFESSION, 2);
+        memory.u32(core + CORE_STATS_LEVEL, 80);
         let (affinity, category) =
-            read_target_classification(&memory, local, 0, descriptor, Some(member));
+            read_target_classification(&memory, local, AGENT_TYPE_CHARACTER, agent, Some(member));
         assert!(matches!(affinity, Ok(Affinity::Friendly)));
         assert!(matches!(
             category,
-            Ok(flags) if flags == make_bitflags!(TargetCategory::{Player | Friendly})
+            Ok(flags) if flags == make_bitflags!(TargetCategory::{Player | Friendly | Normal})
         ));
 
-        // Any other character stays unknown rather than being guessed at, so a
-        // classification trigger cannot fire on the wrong target.
+        // A hostile non-player character reports `Profession::End` and a rank
+        // flag; the flag wins over the level fallback.
+        memory.pointer(stranger + CHARACTER_CORE_STATS, core);
+        memory.u32(stranger + CHARACTER_ATTITUDE, 1);
+        memory.u32(stranger + CHARACTER_RANK_FLAGS, RANK_VETERAN);
+        memory.u32(core + CORE_PROFESSION, 10);
+        memory.u32(core + CORE_STATS_LEVEL, 80);
         let (affinity, category) =
-            read_target_classification(&memory, local, 0, descriptor, Some(stranger));
+            read_target_classification(&memory, local, AGENT_TYPE_CHARACTER, agent, Some(stranger));
+        assert!(matches!(affinity, Ok(Affinity::Hostile)));
+        assert!(matches!(
+            category,
+            Ok(flags) if flags == make_bitflags!(TargetCategory::{Monster | Hostile | Veteran})
+        ));
+
+        // Every rank flag maps to its own rank.
+        for (flags, rank) in [
+            (RANK_CHAMPION, TargetCategory::Champion),
+            (RANK_ELITE, TargetCategory::Elite),
+            (RANK_LEGENDARY, TargetCategory::Legendary),
+            (RANK_VETERAN, TargetCategory::Veteran),
+        ] {
+            memory.u32(stranger + CHARACTER_RANK_FLAGS, flags);
+            let (_, category) = read_target_classification(
+                &memory,
+                local,
+                AGENT_TYPE_CHARACTER,
+                agent,
+                Some(stranger),
+            );
+            assert!(matches!(category, Ok(flags) if flags.contains(rank)));
+        }
+
+        // No rank flag and no level means an ambient creature.
+        memory.u32(stranger + CHARACTER_RANK_FLAGS, 0);
+        memory.u32(core + CORE_STATS_LEVEL, LEVEL_NONE);
+        let (_, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_CHARACTER, agent, Some(stranger));
+        assert!(matches!(
+            category,
+            Ok(flags) if flags.contains(TargetCategory::Ambient)
+        ));
+
+        // A friendly attitude without a player profession is a non-player
+        // character, not a monster.
+        memory.u32(stranger + CHARACTER_ATTITUDE, 0);
+        memory.u32(core + CORE_STATS_LEVEL, 80);
+        let (affinity, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_CHARACTER, agent, Some(stranger));
+        assert!(matches!(affinity, Ok(Affinity::Friendly)));
+        assert!(matches!(
+            category,
+            Ok(flags) if flags.contains(TargetCategory::Npc)
+        ));
+
+        // An unreadable disposition stays unknown.
+        memory.u32(stranger + CHARACTER_ATTITUDE, 99);
+        let (affinity, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_CHARACTER, agent, Some(stranger));
         assert!(matches!(affinity, Err(Error::Affinity)));
         assert!(matches!(category, Err(Error::TargetState)));
 
-        // Kind 0 without a character pointer is unknown too.
-        let (_, category) = read_target_classification(&memory, local, 0, descriptor, None);
+        // A character agent without a character pointer is unknown too.
+        let (_, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_CHARACTER, agent, None);
         assert!(matches!(category, Err(Error::TargetState)));
 
-        // Kind 10 objects are classified by their descriptor object type.
-        memory.u32(descriptor + TARGET_OBJECT_TYPE, OBJECT_TYPE_CHEST);
-        let (_, category) = read_target_classification(&memory, local, 10, descriptor, None);
+        // A resource node is classified by its resource node type.
+        memory.u32(agent + GADGET_TYPE, GADGET_TYPE_RESOURCE_NODE);
+        memory.pointer(agent + GADGET_OBJECT, gadget);
+        for (node, expected) in [
+            (RESOURCE_NODE_ROCK, TargetCategory::Ore),
+            (RESOURCE_NODE_TREE, TargetCategory::Wood),
+            (RESOURCE_NODE_PLANT, TargetCategory::Plant),
+        ] {
+            memory.u32(gadget + GADGET_RESOURCE_NODE_TYPE, node);
+            let (_, category) =
+                read_target_classification(&memory, local, AGENT_TYPE_GADGET, agent, None);
+            assert!(matches!(
+                category,
+                Ok(flags) if flags.contains(TargetCategory::Gatherable)
+                    && flags.contains(expected)
+            ));
+        }
+
+        // A cache is a chest, and an unreadable node type is still a node.
+        memory.u32(gadget + GADGET_RESOURCE_NODE_TYPE, RESOURCE_NODE_CACHE);
+        let (_, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_GADGET, agent, None);
         assert!(matches!(
             category,
             Ok(flags) if flags == BitFlags::from(TargetCategory::Chest)
         ));
 
-        memory.u32(descriptor + TARGET_OBJECT_TYPE, OBJECT_TYPE_GATHERABLE);
-        let (_, category) = read_target_classification(&memory, local, 10, descriptor, None);
+        memory.u32(gadget + GADGET_RESOURCE_NODE_TYPE, 0xFF);
+        let (_, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_GADGET, agent, None);
         assert!(matches!(
             category,
             Ok(flags) if flags == BitFlags::from(TargetCategory::Gatherable)
         ));
 
-        // An unknown object type stays unknown.
-        memory.u32(descriptor + TARGET_OBJECT_TYPE, 0x42);
-        let (_, category) = read_target_classification(&memory, local, 10, descriptor, None);
-        assert!(matches!(category, Err(Error::TargetState)));
-
-        // Kind 11 is the prop object of an Epic world boss.
-        let (affinity, category) = read_target_classification(&memory, local, 11, descriptor, None);
-        assert!(matches!(affinity, Ok(Affinity::Hostile)));
+        // Any other gadget is a plain object, an attack target is hostile.
+        memory.u32(agent + GADGET_TYPE, 3);
+        let (_, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_GADGET, agent, None);
         assert!(matches!(
             category,
-            Ok(flags) if flags == make_bitflags!(TargetCategory::{Monster | Hostile | Epic})
+            Ok(flags) if flags == BitFlags::from(TargetCategory::Gadget)
         ));
 
-        // A group member is only recognised through the kind 0 character path.
+        memory.u32(agent + GADGET_TYPE, GADGET_TYPE_ATTACK_TARGET);
         let (_, category) =
-            read_target_classification(&memory, local, 10, descriptor, Some(member));
+            read_target_classification(&memory, local, AGENT_TYPE_GADGET, agent, None);
+        assert!(matches!(
+            category,
+            Ok(flags) if flags == make_bitflags!(TargetCategory::{Gadget | Hostile})
+        ));
+
+        // A gadget agent with an unreadable type stays unknown.
+        let (_, category) =
+            read_target_classification(&memory, local, AGENT_TYPE_GADGET, 0xDEAD_0000, None);
         assert!(matches!(category, Err(Error::TargetState)));
 
-        // Unknown kinds stay unknown.
-        for kind in [7, 12] {
-            let (_, category) = read_target_classification(&memory, local, kind, descriptor, None);
+        // Unknown agent types stay unknown.
+        for agent_type in [7, 15, 12] {
+            let (_, category) = read_target_classification(&memory, local, agent_type, agent, None);
             assert!(matches!(category, Err(Error::TargetState)));
         }
     }
