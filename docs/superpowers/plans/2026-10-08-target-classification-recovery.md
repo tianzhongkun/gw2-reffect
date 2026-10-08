@@ -49,8 +49,24 @@
 [reffect-target-classify] agent[0x000..0x140]=...
 ```
 
-Nexus 日志默认在 `<GW2 安装目录>/addons/Nexus.log`。把日志复制出来，只保留
+日志由 Nexus 写在 `<GW2 安装目录>/addons/Nexus/Nexus.log`（注意是 `Nexus` 子目录，不是
+`addons` 根目录），每一行前面会带 `[Reffect (alpha)]` 标签。把日志复制出来，只保留
 `[reffect-target-classify]` 行即可。
+
+探针必须用**当前分支构建的 DLL**才会输出，上游发布的 0.11.3 / 0.13.1 都没有这些行：
+
+```bash
+cargo build --release
+cp target/release/reffect.dll "<GW2 安装目录>/addons/Reffect.dll"
+```
+
+用 `[Reffect (alpha)] [INFO] Reffect v0.13.2 load` 这一行确认装上去的是新构建。
+
+> 本机现状（2026-10-08 核对）：完整可运行的客户端在 `D:\临时\GuildWars2`，其
+> `addons\Reffect.dll` 仍是 **v0.11.3**（2026-07-09），日志
+> `addons\Nexus\Nexus.log` 停在 2026-07-12，里面没有任何 `[reffect-runtime]` 行。
+> `C:\Users\Loong\Games\GuildWars2` 只剩下 `addons` 的少量文件，缺少 `Gw2-64.exe`
+> 和 Nexus 的 `d3d11.dll`，不能用来跑探针。
 
 ### 2. 采样清单
 
