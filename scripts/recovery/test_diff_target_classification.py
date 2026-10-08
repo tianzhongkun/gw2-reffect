@@ -17,6 +17,7 @@ from diff_target_classification import (  # noqa: E402
     parse_samples,
     rank_candidates,
     render_report,
+    single_object_labels,
     single_sample_labels,
 )
 
@@ -249,6 +250,21 @@ class RankCandidatesTest(unittest.TestCase):
         self.assertEqual(single_sample_labels(samples), ["normal"])
         self.assertIn(
             "labels sampled only once", render_report(samples, [])
+        )
+
+    def test_reports_labels_that_only_sampled_one_object(self) -> None:
+        # Two samples of the *same* monster: every per-target field looks
+        # constant within the label, so the report has to say so.
+        samples = [
+            Sample(kind=0, object=0x1000, label="veteran", regions={}),
+            Sample(kind=0, object=0x1000, label="veteran", regions={}),
+            Sample(kind=0, object=0x2000, label="normal", regions={}),
+            Sample(kind=0, object=0x3000, label="normal", regions={}),
+        ]
+
+        self.assertEqual(single_object_labels(samples), ["veteran"])
+        self.assertIn(
+            "only ever sampled the same target object", render_report(samples, [])
         )
 
     def test_ignores_offsets_that_do_not_separate_labels(self) -> None:

@@ -163,23 +163,35 @@ Tag the selected target, then select the next one:
 只采一次的话，任何「随采样递增」的字段（计时器、id、地址）都会看起来像完美分类字段；
 两次就能让它们通不过「标签内一致」检查。
 
-建议覆盖的目标：
+**更重要的是：同一个标签要采两个*不同*的目标。** 只反复选同一只怪的话，它的 id、血量、
+坐标、物种这些**每个目标独有的字段**在标签内全都恒定，于是它们看起来都和等级字段一样好，
+根本分不出哪个是等级。所以每个等级要标**两只不同的怪**：
 
-| 目标 | 点哪个按钮 |
+| 标签 | 采什么 |
 | --- | --- |
-| 队伍里的队友玩家 | `player` |
-| 普通红名怪 | `normal` |
-| Veteran（"Veteran ..." 铜边） | `veteran` |
-| Elite（银边，副本内较多） | `elite` |
-| Champion（金边 + 交叉剑） | `champion` |
-| Legendary（紫边 + 交叉剑） | `legendary` |
-| Epic 世界 boss | `epic` |
-| 中立黄名生物 | `neutral` |
-| 矿点（如 Mithril Ore） | `ore` |
-| 树（如 Ancient Sapling） | `wood` |
-| 草/植物（如 Herb Sprouts） | `plant` |
-| 宝箱 | `chest` |
-| 友好 NPC（商人 / 服务） | `npc` |
+| `normal` | 两只不同的普通红名怪 |
+| `veteran` | 两只不同的 Veteran（"Veteran ..." 铜边） |
+| `champion` | 两只不同的 Champion（金边 + 交叉剑） |
+| `elite` | 两只不同的 Elite（银边，副本内较多） |
+| `legendary` | 两只不同的 Legendary（紫边），可选 |
+| `epic` | 两只不同的 Epic 世界 boss，可选 |
+| `neutral` | 两只不同的中立黄名生物 |
+| `ore` / `wood` / `plant` | 各两只不同的采集点 |
+| `chest` | 两只不同的宝箱 |
+| `npc` | 两个不同的友好 NPC（商人 / 服务） |
+| `player` | 两名不同的队友玩家 |
+
+diff 工具会检查这一点，只采了同一个目标时会警告：
+
+```
+warning: these labels only ever sampled the same target object: normal, veteran
+         every per-target field (id, health, position, species) is constant within such a label,
+         so nothing separates the field being hunted from the rest
+         select a *different* target of the same kind as well
+```
+
+**等级字段要 4 个等级一起比才能认出来**：它应该在 `normal` / `veteran` / `champion` / `elite`
+四个标签上取到四个不同的**小整数**。只有两个等级时，任何「这两只怪不一样」的字段都会入选。
 
 一个会话里凑不齐也没关系，分几次采、每次跑一遍 diff，最后把候选并起来看。探针在一次会话里
 最多输出 256 个目标，到上限会写一行提示并停止。

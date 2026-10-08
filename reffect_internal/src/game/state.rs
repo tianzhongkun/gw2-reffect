@@ -2981,11 +2981,6 @@ fn log_target_classification_probe(
         pointer_field(core),
     );
 
-    probe_region(game, "descriptor", descriptor, PROBE_DESCRIPTOR);
-    probe_region(game, "object", object, PROBE_OBJECT);
-    probe_strings(game, "descriptor", descriptor, PROBE_DESCRIPTOR);
-    probe_strings(game, "object", object, PROBE_OBJECT);
-
     // `character` is `object - 0x48` regardless of kind, so it is only a real
     // character for kind 0. Dumping it for the other kinds would only add noise
     // from whatever happens to live at that offset in the heap.

@@ -272,6 +272,23 @@ def single_sample_labels(samples: list[Sample]) -> list[str]:
     return sorted(label for label, count in counts.items() if count == 1)
 
 
+def single_object_labels(samples: list[Sample]) -> list[str]:
+    """Returns the labels whose samples are all the *same* target object.
+
+    Re-selecting one monster twice makes every per-target field - its id, its
+    health, its position, its species - look constant within the label, so
+    nothing distinguishes the field being hunted from all the rest. Sampling two
+    different monsters of the same rank is what removes that ambiguity.
+    """
+    objects: dict[str, set[int]] = {}
+    for sample in samples:
+        if sample.label is not None:
+            objects.setdefault(sample.label, set()).add(sample.object)
+    return sorted(
+        label for label, seen in objects.items() if len(seen) == 1
+    )
+
+
 def render_report(samples: list[Sample], candidates: list[Candidate]) -> str:
     lines = [f"parsed {len(samples)} probe dump(s)"]
 
@@ -294,6 +311,24 @@ def render_report(samples: list[Sample], candidates: list[Candidate]) -> str:
         lines.append(
             "         select each target at least twice (repeat its label) for a "
             "reliable result"
+        )
+
+    same = single_object_labels(samples)
+    if same:
+        lines.append("")
+        lines.append(
+            "warning: these labels only ever sampled the same target object: "
+            + ", ".join(same)
+        )
+        lines.append(
+            "         every per-target field (id, health, position, species) is "
+            "constant within such a label,"
+        )
+        lines.append(
+            "         so nothing separates the field being hunted from the rest"
+        )
+        lines.append(
+            "         select a *different* target of the same kind as well"
         )
 
     if not candidates:
