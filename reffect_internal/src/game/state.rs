@@ -3119,13 +3119,91 @@ fn probe_local_name(game: &impl GameMemory, local: usize) {
         pointer_field(core),
     );
 
-    probe_name_match(game, "local", local, PROBE_LOCAL_CHARACTER, &name);
-    if let Some(agent) = agent {
-        probe_name_match(game, "local-agent", agent, PROBE_LOCAL_AGENT, &name);
+    let anchors = [
+        ("local", local, PROBE_LOCAL_CHARACTER),
+        ("local-agent", agent.unwrap_or(0), PROBE_LOCAL_AGENT),
+        ("local-core", core.unwrap_or(0), PROBE_LOCAL_CORE),
+    ];
+    for (region, base, range) in anchors {
+        if base != 0 {
+            probe_name_match(game, region, base, range, &name);
+        }
     }
-    if let Some(core) = core {
-        probe_name_match(game, "local-core", core, PROBE_LOCAL_CORE, &name);
-    }
+
+    probe_name_heap(game, &name, &anchors);
+}
+
+/// Finds where the player's name actually lives by scanning the process heap.
+///
+/// The bounded search proved the name is not within two hops of the local
+/// character, its agent or its core stats, so the reference chain is longer than
+/// that. Scanning the heap locates every copy of the name, and checking the
+/// already dumped structures for a pointer to a hit resolves the field when the
+/// reference is one we can already see.
+///
+/// One-shot diagnostic: it walks the whole writable private memory, which stalls
+/// the worker for a moment. Remove with the rest of the probe.
+fn probe_name_heap(game: &impl GameMemory, name: &str, anchors: &[(&str, usize, (usize, usize))]) {
+    /// Stop after this many copies so a name stored in many pools cannot flood
+    /// the log.
+    const MAX_HITS: usize = 16;
+    /// Give up after scanning this much, so a huge heap cannot stall the worker.
+    const MAX_SCAN: usize = 0x8000_0000;
+
+    let needles = name_needles(name);
+    let anchor_data: Vec<(&str, usize, Vec<u8>)> = anchors
+        .iter()
+        .filter(|(_, base, _)| *base != 0)
+        .map(|(region, base, range)| {
+            (
+                *region,
+                *base,
+                read_region_bytes(game, *base, range.0, range.1),
+            )
+        })
+        .collect();
+
+    let mut hits = 0usize;
+    let mut scanned = 0usize;
+    let mut next_report = 0x1000_0000;
+
+    super::for_each_heap_window(size_of::<u64>(), |base, bytes| {
+        scanned += bytes.len();
+        if scanned >= next_report {
+            next_report += 0x1000_0000;
+            log::warn!("[reffect-target-classify] heap name scan at {scanned:#x} bytes");
+        }
+        if scanned > MAX_SCAN {
+            return false;
+        }
+
+        for (encoding, needle) in &needles {
+            for index in find_all(bytes, needle) {
+                let address = base + index;
+                log::warn!(
+                    "[reffect-target-classify] heap name {address:#x} ({encoding}) page={:#x}",
+                    address & !0xfff
+                );
+                let encoded = (address as u64).to_le_bytes();
+                for (region, anchor_base, data) in &anchor_data {
+                    for offset in find_all(data, &encoded) {
+                        log::warn!(
+                            "[reffect-target-classify] heap name referenced by {region}+{offset:#05x} (anchor {anchor_base:#x})"
+                        );
+                    }
+                }
+                hits += 1;
+                if hits >= MAX_HITS {
+                    return false;
+                }
+            }
+        }
+        true
+    });
+
+    log::warn!(
+        "[reffect-target-classify] heap name scan done: {hits} hit(s) over {scanned:#x} bytes"
+    );
 }
 
 /// Searches `[start, end)` at `base` for `name` and logs every hit.
