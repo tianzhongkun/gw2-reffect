@@ -14,8 +14,42 @@ use nexus::imgui::{StyleColor, TreeNode, TreeNodeFlags, Ui, Window};
 use std::{
     cmp::Ordering,
     fmt::{self, Write},
+    sync::atomic::{self, AtomicU32, AtomicUsize},
 };
 use strum::IntoEnumIterator;
+
+/// Categories offered by the target classification probe, matching the sampling
+/// checklist in `docs/superpowers/plans/2026-10-08-target-classification-recovery.md`.
+const PROBE_LABELS: [&str; 13] = [
+    "player",
+    "npc",
+    "normal",
+    "veteran",
+    "elite",
+    "champion",
+    "legendary",
+    "epic",
+    "neutral",
+    "ore",
+    "wood",
+    "plant",
+    "chest",
+];
+
+/// Sequence of the target that was last tagged from the debug window.
+static PROBE_LAST_TAG_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+/// Index into [`PROBE_LABELS`] plus one, or 0 when nothing was tagged yet.
+static PROBE_LAST_TAG_LABEL: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the last tag applied from the debug window as `(sequence, label)`.
+fn probe_last_tag() -> Option<(u32, &'static str)> {
+    let index = PROBE_LAST_TAG_LABEL.load(atomic::Ordering::Relaxed);
+    let label = PROBE_LABELS.get(index.checked_sub(1)?)?;
+    Some((
+        PROBE_LAST_TAG_SEQUENCE.load(atomic::Ordering::Relaxed),
+        label,
+    ))
+}
 
 impl Addon {
     pub fn render_debug(&mut self, ui: &Ui, ctx: &Context) {
@@ -72,6 +106,8 @@ impl Addon {
                     }
                     Err(err) => ui.text_colored(colors::RED, err.to_string()),
                 }
+
+                render_target_probe(ui);
 
                 ui.text(format!("Map id: {}", ctx.map.id));
                 ui.text(format!("Map category: {}", ctx.map.category));
@@ -313,6 +349,45 @@ impl Addon {
                 ctx.edit.debug(ui);
                 Clipboard::debug(ui);
             });
+    }
+}
+
+/// Renders the target classification probe controls (offset recovery only).
+///
+/// Shows the sequence of the current selection and tags it in the log, so a
+/// capture labels itself while it is taken instead of relying on the order the
+/// targets were selected in.
+fn render_target_probe(ui: &Ui) {
+    let Some(sequence) = crate::internal::game::state::target_probe_sequence() else {
+        ui.text("Target probe:");
+        ui.same_line();
+        ui.text_colored(colors::GREY, "no target selected");
+        return;
+    };
+
+    ui.text("Target probe:");
+    ui.same_line();
+    ui.text(format!("seq {sequence}"));
+    ui.same_line();
+    match probe_last_tag() {
+        Some((tagged, label)) if tagged == sequence => {
+            ui.text_colored(colors::GREEN, format!("tagged \"{label}\""))
+        }
+        _ => ui.text_colored(colors::YELLOW, "not tagged"),
+    }
+    ui.text("Tag the selected target, then select the next one:");
+
+    for (index, label) in PROBE_LABELS.iter().enumerate() {
+        if index % 7 != 0 {
+            ui.same_line();
+        }
+        if ui.small_button(*label) {
+            // Same prefix and level as the probe dumps, so the diff tool picks
+            // the label up from the log without any manual transcription.
+            log::warn!("[reffect-target-classify] label={label} seq={sequence}");
+            PROBE_LAST_TAG_SEQUENCE.store(sequence, atomic::Ordering::Relaxed);
+            PROBE_LAST_TAG_LABEL.store(index + 1, atomic::Ordering::Relaxed);
+        }
     }
 }
 

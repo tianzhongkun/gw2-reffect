@@ -102,6 +102,40 @@ class ParseSamplesTest(unittest.TestCase):
             {0x300: 1, 0x304: 2, 0x308: 3, 0x30C: 4},
         )
 
+    def test_attaches_labels_written_by_the_tagging_ui(self) -> None:
+        text = "\n".join(
+            [
+                "[reffect-target-classify] seq=1 kind=0 descriptor=0x1 object=0x10 "
+                "character=None agent=None core=None",
+                "[reffect-target-classify] label=veteran seq=1",
+                "[reffect-target-classify] seq=2 kind=0 descriptor=0x2 object=0x20 "
+                "character=None agent=None core=None",
+                "[reffect-target-classify] label=champion seq=2",
+            ]
+        )
+
+        samples = parse_samples(text)
+
+        self.assertEqual(
+            [(sample.sequence, sample.label) for sample in samples],
+            [(1, "veteran"), (2, "champion")],
+        )
+
+    def test_label_without_a_sequence_applies_to_the_last_sample(self) -> None:
+        text = "\n".join(
+            [
+                "[reffect-target-classify] kind=0 descriptor=0x1 object=0x10 "
+                "character=None agent=None core=None",
+                "[reffect-target-classify] object[0x000..0x008]=00000001 ",
+                "[reffect-target-classify] label=ore",
+            ]
+        )
+
+        samples = parse_samples(text)
+
+        self.assertEqual(samples[0].label, "ore")
+        self.assertIsNone(samples[0].sequence)
+
     def test_keeps_unreadable_words_as_none(self) -> None:
         text = "\n".join(probe_block(character_words=[1, None, 3]))
 
@@ -294,6 +328,56 @@ class CliTest(unittest.TestCase):
             log.write_text("\n".join(probe_block()), encoding="utf-8")
 
             exit_code = main(["--log", str(log), "--labels", "normal,champion"])
+
+            self.assertEqual(exit_code, 1)
+
+    def test_labels_tagged_in_game_need_no_labels_argument(self) -> None:
+        def tagged(sequence: int, label: str, rank: int) -> list[str]:
+            block = probe_block(character_words=[0, rank])
+            header = block[0].replace(
+                "[reffect-target-classify] ",
+                f"[reffect-target-classify] seq={sequence} ",
+            )
+            return [
+                header,
+                *block[1:],
+                f"[reffect-target-classify] label={label} seq={sequence}",
+            ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "Nexus.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        *tagged(1, "normal", 1),
+                        *tagged(2, "normal", 1),
+                        *tagged(3, "champion", 5),
+                        *tagged(4, "champion", 5),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = main(["--log", str(log)])
+
+            self.assertEqual(exit_code, 0)
+
+    def test_untagged_samples_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "Nexus.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        *probe_block(character_words=[0, 1]),
+                        "[reffect-target-classify] label=normal",
+                        *probe_block(character_words=[0, 5]),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            # Only one sample is tagged, which is not enough to compare.
+            exit_code = main(["--log", str(log)])
 
             self.assertEqual(exit_code, 1)
 

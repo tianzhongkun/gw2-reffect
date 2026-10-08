@@ -6,23 +6,31 @@ because the client fields carrying the agent type, disposition, NPC rank and
 gathering discipline are not part of the recovered read graph. The addon
 therefore dumps the candidate structs once per selected target:
 
-    [reffect-target-classify] kind=0 descriptor=0x... object=0x... character=0x... agent=0x... core=0x...
-    [reffect-target-classify] descriptor[0x00..0x40]=00000000 ...
-    [reffect-target-classify] object[0x00..0x80]=...
-    [reffect-target-classify] character[0x300..0x540]=...
-    [reffect-target-classify] core[0x000..0x180]=...
-    [reffect-target-classify] agent[0x000..0x140]=...
+    [reffect-target-classify] seq=1 kind=0 descriptor=0x... object=0x... character=0x... agent=0x... core=None
+    [reffect-target-classify] descriptor[0x000..0x080]=00000000 ...
+    [reffect-target-classify] object[0x000..0x080]=...
+    [reffect-target-classify] character[0x000..0x080]=...
+    [reffect-target-classify] core[0x000..0x080]=...
+    [reffect-target-classify] agent[0x000..0x080]=...
 
-Select targets whose category you know in game and diff the dumps:
+Select a target whose category you know in game and tag it from the addon's
+debug window ("Target probe" section). Tagging appends a line to the log:
 
-    python scripts/recovery/diff_target_classification.py \
-        --log Nexus.log \
-        --labels normal,normal,veteran,veteran,champion,champion
+    [reffect-target-classify] label=champion seq=7
 
-**Select each target at least twice** and repeat its label: with only one sample
-per label, any field that merely counts samples (a timer, an id, an address)
-looks like a perfect separator. Two samples per label make those fail the
-per-label consistency check.
+so the capture labels itself and the selection order does not matter. Then diff
+the dumps:
+
+    python scripts/recovery/diff_target_classification.py --log Nexus.log
+
+**Tag each target at least twice** (select it, tag it, select something else,
+select it again, tag it again): with only one sample per label, any field that
+merely counts samples (a timer, an id, an address) looks like a perfect
+separator. Two samples per label make those fail the per-label consistency
+check.
+
+`--labels` can still be passed to label the samples positionally instead, which
+is useful for a capture taken before the tagging UI existed.
 
 A field that is constant within each label but differs between labels is a
 candidate for the classification offset. Candidates are ranked by whether they
@@ -52,6 +60,7 @@ PROBE_PREFIX = "[reffect-target-classify]"
 OPTIONAL_POINTER = r"(?:Some\(0x[0-9a-f]+\)|Some\(\d+\)|0x[0-9a-f]+|None)"
 
 HEADER = re.compile(
+    r"(?:seq=(?P<seq>\d+)\s+)?"
     r"kind=(?P<kind>\d+)"
     r" descriptor=(?P<descriptor>0x[0-9a-f]+)"
     r" object=(?P<object>0x[0-9a-f]+)"
@@ -59,6 +68,9 @@ HEADER = re.compile(
     r" agent=" + OPTIONAL_POINTER
     + r" core=" + OPTIONAL_POINTER
 )
+
+# Written by the addon's debug window when a target is tagged.
+LABEL = re.compile(r"label=(?P<label>[A-Za-z0-9_-]+)(?:\s+seq=(?P<seq>\d+))?")
 
 REGION = re.compile(
     r"^(?P<region>[a-z]+)\[(?P<start>0x[0-9a-f]+)\.\.(?P<end>0x[0-9a-f]+)\]=(?P<words>.*)$"
@@ -77,6 +89,7 @@ class Sample:
 
     kind: int
     object: int
+    sequence: int | None = None
     label: str | None = None
     # region name -> absolute struct offset -> value (None when unreadable)
     regions: dict[str, dict[int, int | None]] = field(default_factory=dict)
@@ -93,7 +106,8 @@ def parse_samples(text: str) -> list[Sample]:
     """Parses the probe lines out of a Nexus log.
 
     Lines that are not part of a probe block are ignored, so the log can be
-    passed in verbatim.
+    passed in verbatim. `label=` lines written by the addon's tagging UI are
+    attached to the sample they name, so a capture labels itself.
     """
     samples: list[Sample] = []
     current: Sample | None = None
@@ -106,11 +120,18 @@ def parse_samples(text: str) -> list[Sample]:
 
         header = HEADER.search(line)
         if header:
+            sequence = header.group("seq")
             current = Sample(
                 kind=int(header.group("kind")),
                 object=int(header.group("object"), 16),
+                sequence=int(sequence) if sequence is not None else None,
             )
             samples.append(current)
+            continue
+
+        label = LABEL.search(line)
+        if label:
+            attach_label(samples, current, label)
             continue
 
         region = REGION.match(line)
@@ -123,6 +144,26 @@ def parse_samples(text: str) -> list[Sample]:
             }
 
     return samples
+
+
+def attach_label(
+    samples: list[Sample],
+    current: Sample | None,
+    match: re.Match[str],
+) -> None:
+    """Attaches a `label=` line to the sample it belongs to.
+
+    The sequence is authoritative when present. Without one the label applies to
+    the sample whose block just ended, which is what a capture taken before the
+    tagging UI existed looks like.
+    """
+    sequence = match.group("seq")
+    target = current
+    if sequence is not None:
+        wanted = int(sequence)
+        target = next((s for s in samples if s.sequence == wanted), None)
+    if target is not None:
+        target.label = match.group("label")
 
 
 def label_samples(samples: list[Sample], labels: list[str]) -> None:
@@ -235,8 +276,8 @@ def render_report(samples: list[Sample], candidates: list[Candidate]) -> str:
             f"{region}[{len(words)}]" for region, words in sorted(sample.regions.items())
         )
         lines.append(
-            f"  #{index + 1} label={sample.label} kind={sample.kind} "
-            f"object={sample.object:#x} regions: {regions}"
+            f"  #{index + 1} seq={sample.sequence} label={sample.label} "
+            f"kind={sample.kind} object={sample.object:#x} regions: {regions}"
         )
 
     once = single_sample_labels(samples)
@@ -278,6 +319,7 @@ def report_dict(samples: list[Sample], candidates: list[Candidate]) -> dict[str,
         "samples": [
             {
                 "label": sample.label,
+                "sequence": sample.sequence,
                 "kind": sample.kind,
                 "object": sample.object,
                 "regions": {
@@ -305,8 +347,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log", required=True, type=Path, help="Nexus log containing the probe lines")
     parser.add_argument(
         "--labels",
-        required=True,
-        help="comma separated labels, one per probe dump in log order",
+        help="comma separated labels, one per probe dump in log order; overrides "
+        "the labels tagged in game",
     )
     parser.add_argument("--out", type=Path, help="write the report as JSON")
     parser.add_argument(
@@ -328,11 +370,33 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no {PROBE_PREFIX} lines found in {args.log}", file=sys.stderr)
         return 1
 
-    labels = [label.strip() for label in args.labels.split(",") if label.strip()]
-    try:
-        label_samples(samples, labels)
-    except ValueError as error:
-        print(str(error), file=sys.stderr)
+    if args.labels:
+        labels = [label.strip() for label in args.labels.split(",") if label.strip()]
+        try:
+            label_samples(samples, labels)
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+
+    # Untagged samples are dropped rather than guessed at: dropping one cannot
+    # corrupt the comparison, while assuming a label would.
+    unlabeled = [sample for sample in samples if sample.label is None]
+    if unlabeled:
+        sequences = ", ".join(
+            f"seq {sample.sequence}" if sample.sequence is not None else "unsequenced"
+            for sample in unlabeled
+        )
+        print(
+            f"warning: ignoring {len(unlabeled)} untagged sample(s): {sequences}",
+            file=sys.stderr,
+        )
+    samples = [sample for sample in samples if sample.label is not None]
+    if len(samples) < 2:
+        print(
+            "need at least two tagged samples; tag each target from the addon's "
+            "debug window, or pass --labels",
+            file=sys.stderr,
+        )
         return 1
 
     candidates = rank_candidates(samples, max_value=args.max_value)

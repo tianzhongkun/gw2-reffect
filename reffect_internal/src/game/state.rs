@@ -25,7 +25,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -271,6 +271,36 @@ const PROBE_OBJECT: (usize, usize) = (0x000, 0x180);
 const PROBE_CHARACTER: (usize, usize) = (0x000, 0x540);
 const PROBE_CORE_STATS: (usize, usize) = (0x000, 0x180);
 const PROBE_AGENT: (usize, usize) = (0x000, 0x180);
+/// Number of probe dumps after which probing stops, so a client that thrashes
+/// the target descriptor cannot flood the log.
+const PROBE_LIMIT: u32 = 256;
+
+/// Sequence of the target classification probe dump for the currently selected
+/// target; 0 when no target is selected or the probe limit was reached.
+static TARGET_PROBE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+/// Target object the probe last dumped, so each selection dumps exactly once.
+static TARGET_PROBE_OBJECT: AtomicUsize = AtomicUsize::new(0);
+/// Next probe sequence to hand out.
+static TARGET_PROBE_NEXT: AtomicU32 = AtomicU32::new(1);
+
+/// Returns the probe sequence of the currently selected target.
+///
+/// The in-game debug window shows this so a capture can be labelled as it is
+/// taken, instead of relying on the order targets were selected in. `None` when
+/// no target is selected or the probe limit was reached.
+pub fn target_probe_sequence() -> Option<u32> {
+    match TARGET_PROBE_SEQUENCE.load(Ordering::Relaxed) {
+        0 => None,
+        sequence => Some(sequence),
+    }
+}
+
+/// Forgets the probed target, so selecting the same target again produces a
+/// fresh dump and sequence.
+fn clear_target_probe() {
+    TARGET_PROBE_OBJECT.store(0, Ordering::Relaxed);
+    TARGET_PROBE_SEQUENCE.store(0, Ordering::Relaxed);
+}
 const CHARACTER_DEFIANCE: usize = 0xC8;
 const CHARACTER_WEAPON_SWAP_STATE: usize = 0xD8;
 const DEFIANCE_STATE: usize = 0x40;
@@ -622,6 +652,11 @@ fn decode_snapshot(
         build.prof_selections = prof_selections;
     }
     let target = read_target(game, collection, character, buff_cache, now);
+    if target.is_none() {
+        // No selection: forget the probed target so re-selecting it dumps again
+        // and the debug window stops advertising a stale sequence.
+        clear_target_probe();
+    }
 
     Some(RuntimeSnapshot {
         now,
@@ -2887,10 +2922,12 @@ fn read_target_classification(
 /// of a newly selected target so the offsets for agent type, disposition, NPC
 /// rank and gathering discipline can be recovered.
 ///
-/// One dump is emitted per distinct target object, rate limited to 2 Hz, and
-/// carries a `seq` counter so a capture can be labelled afterwards. Select each
-/// target whose category is known in game, twice, in the documented order, then
-/// run `scripts/recovery/diff_target_classification.py` over the log.
+/// Exactly one dump is emitted per selection and it carries a `seq` counter.
+/// The in-game debug window shows the sequence of the current selection and
+/// offers a tag button per category, which appends a `label=<name> seq=<n>`
+/// line to the log. The capture therefore labels itself and no longer depends on
+/// remembering the selection order. See
+/// `docs/superpowers/plans/2026-10-08-target-classification-recovery.md`.
 ///
 /// Remove this probe once the offsets are recovered and validated.
 fn log_target_classification_probe(
@@ -2900,27 +2937,23 @@ fn log_target_classification_probe(
     object: usize,
     character: Option<usize>,
 ) {
-    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-    static LAST_OBJECT: AtomicUsize = AtomicUsize::new(0);
-    static LAST_AT: AtomicU32 = AtomicU32::new(0);
-    static SEQUENCE: AtomicU32 = AtomicU32::new(0);
+    // Dump once per selection. `swap` also records the object for the next poll,
+    // so re-selecting the same target after it was cleared dumps again.
+    if TARGET_PROBE_OBJECT.swap(object, Ordering::Relaxed) == object {
+        return;
+    }
 
-    if LAST_OBJECT.load(Ordering::Relaxed) == object {
+    let sequence = TARGET_PROBE_NEXT.fetch_add(1, Ordering::Relaxed);
+    if sequence > PROBE_LIMIT {
+        TARGET_PROBE_SEQUENCE.store(0, Ordering::Relaxed);
+        if sequence == PROBE_LIMIT + 1 {
+            log::warn!(
+                "[reffect-target-classify] probe limit of {PROBE_LIMIT} dumps reached, stopping"
+            );
+        }
         return;
     }
-    let now = unsafe { GetTickCount() };
-    let last = LAST_AT.load(Ordering::Relaxed);
-    if now.wrapping_sub(last) < 500 {
-        return;
-    }
-    if LAST_AT
-        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
-    LAST_OBJECT.store(object, Ordering::Relaxed);
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+    TARGET_PROBE_SEQUENCE.store(sequence, Ordering::Relaxed);
 
     let agent = character.and_then(|character| pointer_at(game, character, CHARACTER_AGENT));
     let core = character.and_then(|character| pointer_at(game, character, CHARACTER_CORE_STATS));

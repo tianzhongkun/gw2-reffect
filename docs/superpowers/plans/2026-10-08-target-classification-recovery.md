@@ -35,8 +35,8 @@
 
 ### 1. 采集日志
 
-`reffect_internal` 里已经加了一个探针：**每选中一个不同的目标对象，就向 Nexus 日志写一次
-候选结构的 hexdump**（同一目标只写一次，最高 2 Hz）。输出格式：
+`reffect_internal` 里已经加了一个探针：**每选中一个目标，就向 Nexus 日志写一次候选结构的
+hexdump**（每次选择恰好一份）。输出格式：
 
 ```
 [reffect-target-classify] seq=1 kind=0 descriptor=0x... object=0x... character=0x... agent=0x... core=None
@@ -53,7 +53,7 @@
   指针、health 指针、profession 等），`object` / `core` / `agent` 各覆盖 `0x000..0x180`。
 - `character` / `agent` / `core` **只在 `kind=0` 时输出**：读取器一律用 `object - 0x48` 求
   character，对其它 kind 这个地址只是堆上的随机位置，dump 出来全是噪声。
-- `seq=N` 是本次会话内的采样序号，事后标注就按它来。
+- `seq=N` 是本次会话内的采样序号，调试窗口会显示当前选中目标的序号，用它来标注。
 - `???????` 表示该地址不可读，同时也标出了结构实际结束的位置。
 
 日志由 Nexus 写在 `<GW2 安装目录>/addons/Nexus/Nexus.log`（注意是 `Nexus` 子目录，不是
@@ -85,49 +85,73 @@ cp target/release/reffect_open.dll "<GW2 安装目录>/addons/reffect_open.dll"
   证实 `kind` 是真实的类型标签，但语义仍未确定。
 - 这一批没有标注，也没有覆盖采集点 / 宝箱 / 各级怪物，所以无法用来定位 rank 或 agent type。
 
-下一批采样请严格按下面的清单和顺序来。
+下一批采样请按下面的方式在游戏里直接标注。
 
-### 2. 采样清单
+### 2. 在游戏里标注（不用记顺序）
 
-**每个目标至少采样两次**（选中 → 等约 1 秒 → 切走 → 再选回来），并在 `--labels` 里重复它的标签。
-只采样一次的话，任何「随采样递增」的字段（计时器、id、地址）都会看起来像完美分类字段。
+打开 Reffect 的调试窗口（`Reffect Open 调试`），里面有一段 **Target probe**：
 
-**按顺序选，并把顺序记下来**：`seq` 从 1 开始，`--labels` 必须与 `seq` 一一对应。中途误选到
-别的目标会让后面全部错位，所以宁可重开一次会话重新采。
+```
+Target probe:  seq 7   not tagged
+Tag the selected target, then select the next one:
+[player] [npc] [normal] [veteran] [elite] [champion] [legendary]
+[epic] [neutral] [ore] [wood] [plant] [chest]
+```
 
-建议的采样顺序（每项两次）：
+流程：**选中目标 → 看 seq → 点一下对应的按钮 → 换下一个目标**。
 
-| seq | 目标 | 期望分类 |
-| --- | --- | --- |
-| 1–2 | 队伍里的队友玩家 | Player + Friendly |
-| 3–4 | 普通红名怪 | Monster + Hostile + Normal |
-| 5–6 | Veteran（"Veteran ..." 铜边） | Monster + Hostile + Veteran |
-| 7–8 | Elite（银边，副本内较多） | Monster + Hostile + Elite |
-| 9–10 | Champion（金边 + 交叉剑） | Monster + Hostile + Champion |
-| 11–12 | Legendary（紫边 + 交叉剑） | Monster + Hostile + Legendary |
-| 13–14 | Epic 世界 boss | Monster + Hostile + Epic |
-| 15–16 | 中立黄名生物 | Monster + Neutral + Ambient |
-| 17–18 | 矿点（如 Mithril Ore） | Gatherable + Ore |
-| 19–20 | 树（如 Ancient Sapling） | Gatherable + Wood |
-| 21–22 | 草/植物（如 Herb Sprouts） | Gatherable + Plant |
-| 23–24 | 宝箱 | Chest |
-| 25–26 | 友好 NPC（商人 / 服务） | NPC + Friendly |
+点按钮会往日志里写一行：
 
-一个会话里凑不齐也没关系：**同一个 `--labels` 批次里的样本必须是连续采的**，分几次采就分几批
-跑 diff，最后把各批的候选并起来看。
+```
+[reffect-target-classify] label=champion seq=7
+```
+
+于是**日志自己带标注**，`seq` 只是给你核对用的（显示 `tagged "champion"` 说明这次点击生效了）。
+选目标的顺序完全无所谓，中途误选也不会污染数据——只要那个目标没点按钮，它就是未标注样本，
+分析时会被直接丢掉。
+
+**每个目标至少标注两次**：选中 → 点按钮 → 切到别的目标 → 再选回来 → 再点一次。
+只采一次的话，任何「随采样递增」的字段（计时器、id、地址）都会看起来像完美分类字段；
+两次就能让它们通不过「标签内一致」检查。
+
+建议覆盖的目标：
+
+| 目标 | 点哪个按钮 |
+| --- | --- |
+| 队伍里的队友玩家 | `player` |
+| 普通红名怪 | `normal` |
+| Veteran（"Veteran ..." 铜边） | `veteran` |
+| Elite（银边，副本内较多） | `elite` |
+| Champion（金边 + 交叉剑） | `champion` |
+| Legendary（紫边 + 交叉剑） | `legendary` |
+| Epic 世界 boss | `epic` |
+| 中立黄名生物 | `neutral` |
+| 矿点（如 Mithril Ore） | `ore` |
+| 树（如 Ancient Sapling） | `wood` |
+| 草/植物（如 Herb Sprouts） | `plant` |
+| 宝箱 | `chest` |
+| 友好 NPC（商人 / 服务） | `npc` |
+
+一个会话里凑不齐也没关系，分几次采、每次跑一遍 diff，最后把候选并起来看。探针在一次会话里
+最多输出 256 个目标，到上限会写一行提示并停止。
 
 ### 3. 比对候选偏移
 
 ```bash
-python scripts/recovery/diff_target_classification.py \
-    --log Nexus.log \
-    --labels player,player,normal,normal,veteran,veteran,champion,champion,ore,ore,chest,chest \
-    --out target-classification.json
+python scripts/recovery/diff_target_classification.py --log Nexus.log --out target-classification.json
 ```
+
+不需要 `--labels`：标注直接从日志里读。如果确实想按位置手动指定（比如用旧版探针采的日志），
+再传 `--labels player,player,normal,normal,...`，它会覆盖日志里的标注。
 
 输出示例：
 
 ```
+parsed 26 probe dump(s)
+  #1 seq=1 label=player kind=0 object=0x1d0a43098b8 regions: ...
+  ...
+warning: ignoring 3 untagged sample(s): seq 4, seq 11, seq 12
+
 candidates (constant per label, different across labels):
   region       offset  sep stable  values
   character   0x00304    4    yes  player=0x1 normal=0x3 veteran=0x4 champion=0x6
@@ -135,7 +159,7 @@ candidates (constant per label, different across labels):
 ```
 
 - `stable=yes` 表示该偏移在每个标签内取值一致，`sep` 是它在各标签间取到的不同值个数。
-- 工具会警告「只采样一次」的标签。
+- 未标注的样本会被丢弃并列出 `seq`；只标注一次仍然会给出「只采样一次」的警告。
 - 默认只考虑小于 `0x1000` 的值（枚举都很小）；找指针型字段（比如目标名称）时用
   `--max-value 0x8000000000000000`，但那样噪声会大很多。
 
