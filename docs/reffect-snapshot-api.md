@@ -51,8 +51,8 @@ without any further memory reading:
 | `target_kind` | `RF_TARGET_*`: player, NPC, monster, attack target, gatherable, chest, gadget, pet, or unknown |
 | `target_affinity` | `1` friendly, `2` hostile, `4` neutral, `0` unknown |
 | `target_category` | `RF_CAT_*` bits: entity kind, disposition, NPC rank and gathering discipline |
-| `target_position[3]` | Target world position in game units |
-| `player_position[3]` | Player world position in game units |
+| `target_position[3]` | Target world position |
+| `player_position[3]` | Player world position |
 | `target_distance` | Distance between the two, `-1.0` when either is unknown |
 
 `target_kind` is the kind axis of `target_category` reduced to one byte, so a
@@ -78,7 +78,11 @@ disposition. A target the reader could not classify reports
 `RF_TARGET_UNKNOWN`, `target_category == 0` and `target_distance == -1.0`, so a
 consumer that requires a classification stays inactive rather than guessing.
 
-The distance is in the game's own units, the same ones skill tooltips use.
+The distance is in the game's own units, the same ones skill ranges use: a
+skill with a 900 range reaches a target whose `target_distance` is 900 or less.
+The client stores positions in units of 1/32 inch, so the reader scales them by
+32; the Mumble link reports metres with the Y and Z axes swapped, which is
+`game = (mumble.x, mumble.z, mumble.y) * 39.37008` for comparison.
 
 ```c
 #include "reffect_snapshot.h"

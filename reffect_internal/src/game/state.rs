@@ -307,6 +307,13 @@ const RESOURCE_NODE_CACHE: u32 = 6;
 /// position is the first vector of the coordinate object.
 const AGENT_COORDINATE: usize = 0x50;
 const COORDINATE_POSITION: usize = 0x30;
+/// The client stores positions in units of 1/32 inch, while skill ranges, the
+/// wiki and the Mumble link all use inches. A 900 range therefore covers a
+/// target `900 / 32` away in the raw field.
+const POSITION_TO_GAME_UNITS: f32 = 32.0;
+/// Game units (inches) per metre, for comparing against the Mumble link, which
+/// reports positions in metres with the Y and Z axes swapped.
+const GAME_UNITS_PER_METER: f32 = 39.370_08;
 /// Positions outside this magnitude are a misread rather than a place in Tyria.
 const POSITION_LIMIT: f32 = 1_000_000.0;
 
@@ -3124,16 +3131,19 @@ fn read_gadget_classification(
     (affinity, Ok(category))
 }
 
-/// Reads the world position of an agent, `None` when the coordinate object or
-/// the vector itself does not read back as a place in Tyria.
+/// Reads the world position of an agent in game units, `None` when the
+/// coordinate object or the vector itself does not read back as a place in
+/// Tyria.
 fn read_position(game: &impl GameMemory, agent: usize) -> Option<[f32; 3]> {
     let coordinate = pointer_at(game, agent, AGENT_COORDINATE)?;
-    let position = [
+    let raw = [
         value_at::<f32>(game, coordinate, COORDINATE_POSITION)?,
         value_at::<f32>(game, coordinate, COORDINATE_POSITION + size_of::<f32>())?,
         value_at::<f32>(game, coordinate, COORDINATE_POSITION + 2 * size_of::<f32>())?,
     ];
 
+    // The client stores 1/32 inch units; scale to the units skill ranges use.
+    let position = raw.map(|value| value * POSITION_TO_GAME_UNITS);
     position
         .iter()
         .all(|value| value.is_finite() && value.abs() < POSITION_LIMIT)
@@ -3344,6 +3354,23 @@ fn probe_local_name(game: &impl GameMemory, local: usize) {
     }
 
     probe_name_heap(game, &name, &anchors);
+
+    // Position calibration: the Mumble avatar position is authoritative, so
+    // converting it into the game's units and axes and comparing it with the
+    // memory read shows whether the offset and the scaling are right.
+    let memory =
+        pointer_at(game, local, CHARACTER_AGENT).and_then(|agent| read_position(game, agent));
+    let mumble = nexus::data_link::get_mumble_link()
+        .map(|mumble| mumble.read_avatar().position)
+        // The Mumble link reports metres with swapped Y and Z axes.
+        .map(|position| {
+            [
+                position[0] * GAME_UNITS_PER_METER,
+                position[2] * GAME_UNITS_PER_METER,
+                position[1] * GAME_UNITS_PER_METER,
+            ]
+        });
+    log::warn!("[reffect-target-classify] position game={memory:?} mumble_as_game={mumble:?}");
 }
 
 /// Finds where the player's name actually lives by scanning the process heap.
@@ -5568,6 +5595,45 @@ mod tests {
         assert_eq!(ascii.1, "鹏霄".as_bytes());
         assert_eq!(utf16.0, "utf16");
         assert_eq!(utf16.1, vec![0x4f, 0x9e, 0x04, 0x97]);
+    }
+
+    #[test]
+    fn position_is_scaled_to_the_units_skill_ranges_use() {
+        let agent = 0x10_000;
+        let coordinate = 0x20_000;
+        let mut memory = LegacyMixedTreeMemory::default();
+        memory.pointer(agent + AGENT_COORDINATE, coordinate);
+        // A target 900 game units away (a common skill range) sits at 900 / 32 in
+        // the raw field, because the client stores 1/32 inch units.
+        memory.f32(coordinate + COORDINATE_POSITION, 900.0 / 32.0);
+        memory.f32(coordinate + COORDINATE_POSITION + 4, 0.0);
+        memory.f32(coordinate + COORDINATE_POSITION + 8, 0.0);
+
+        let position = read_position(&memory, agent).expect("readable position");
+
+        assert!((position[0] - 900.0).abs() < 0.01, "{position:?}");
+    }
+
+    #[test]
+    fn position_rejects_a_misread_vector() {
+        let agent = 0x10_000;
+        let coordinate = 0x20_000;
+        let mut memory = LegacyMixedTreeMemory::default();
+        memory.pointer(agent + AGENT_COORDINATE, coordinate);
+        memory.f32(coordinate + COORDINATE_POSITION, f32::NAN);
+        memory.f32(coordinate + COORDINATE_POSITION + 4, 0.0);
+        memory.f32(coordinate + COORDINATE_POSITION + 8, 0.0);
+
+        assert!(read_position(&memory, agent).is_none());
+
+        // An unmapped coordinate object is rejected too.
+        assert!(read_position(&memory, 0x30_000).is_none());
+    }
+
+    #[test]
+    fn distance_is_in_game_units() {
+        assert!((distance_between([0.0, 0.0, 0.0], [900.0, 0.0, 0.0]) - 900.0).abs() < 0.01);
+        assert!((distance_between([100.0, 200.0, 300.0], [100.0, 200.0, 300.0])).abs() < 0.01);
     }
 
     #[test]

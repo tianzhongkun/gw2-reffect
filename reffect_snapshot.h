@@ -144,7 +144,8 @@ typedef struct RfSnapshot {
     uint32_t spec;
     uint8_t mount;
 
-    /* Player world position in game units; all zero when unknown. */
+    /* Player world position, in the same game units skill ranges use; all zero
+     * when unknown. */
     float player_position[3];
 
     /* Player resources. */
@@ -203,8 +204,10 @@ typedef struct RfSnapshot {
     uint8_t target_affinity;
     uint32_t target_category;
 
-    /* Target world position in game units, and the distance from the player.
-     * The distance is -1.0 when either position is unknown. */
+    /* Target world position, in the same game units skill ranges use, and the
+     * distance from the player. The distance is -1.0 when either position is
+     * unknown. A skill with a 900 range reaches a target whose distance is
+     * 900 or less. */
     float target_position[3];
     float target_distance;
 
