@@ -138,10 +138,14 @@ def parse_samples(text: str) -> list[Sample]:
         if region and current is not None:
             start = int(region.group("start"), 16)
             words = region.group("words").split()
-            current.regions[region.group("region")] = {
-                start + index * 4: (None if word == UNREADABLE else int(word, 16))
-                for index, word in enumerate(words)
-            }
+            # A region is emitted as several chunks; merge them instead of
+            # letting the last chunk overwrite the earlier ones.
+            current.regions.setdefault(region.group("region"), {}).update(
+                {
+                    start + index * 4: (None if word == UNREADABLE else int(word, 16))
+                    for index, word in enumerate(words)
+                }
+            )
 
     return samples
 
@@ -352,6 +356,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", type=Path, help="write the report as JSON")
     parser.add_argument(
+        "--kind",
+        help="only compare samples whose descriptor kind is in this comma "
+        "separated list; needed because character/agent/core are only dumped "
+        "for kind 0, so mixing kinds hides every character offset",
+    )
+    parser.add_argument(
         "--max-value",
         type=lambda value: int(value, 0),
         default=DEFAULT_MAX_VALUE,
@@ -398,6 +408,16 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    if args.kind:
+        kinds = {int(value, 0) for value in args.kind.split(",") if value.strip()}
+        samples = [sample for sample in samples if sample.kind in kinds]
+        if len(samples) < 2:
+            print(
+                f"need at least two tagged samples of kind {sorted(kinds)}",
+                file=sys.stderr,
+            )
+            return 1
 
     candidates = rank_candidates(samples, max_value=args.max_value)
     print(render_report(samples, candidates))

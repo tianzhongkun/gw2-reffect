@@ -31,6 +31,35 @@
 **尚未确定**：agent 类型、阵营、怪物等级、采集专业、目标名称。这些不在 0.13.1 的读取图里，
 必须用下面的探针从运行中的客户端采样定位。
 
+## 已确认的发现
+
+**第二次采样（2026-10-08，29 个已标注样本）确认了 `kind` 标签的语义：**
+
+| kind | 已标注的目标 | 含义 |
+| --- | --- | --- |
+| 0 | neutral / normal / veteran / champion / elite / npc | **角色**：怪物与 NPC |
+| 10 | plant / wood / ore / chest | **采集点与宝箱**（环境物件） |
+| 11 | epic | **世界 boss 的 prop 物件**（wiki 里 Epic 内部就叫 "prop boss"） |
+
+也就是说 `descriptor + 0x08` 已经把「角色 / 采集点·宝箱 / 世界 boss」三类分开了。
+**但 `kind` 本身还不足以发布分类**：它区分不了玩家和怪物，也区分不了矿 / 树 / 草 / 宝箱，
+所以 `read_target_classification` 目前仍然只在「目标是当前队伍成员」时发布结果。
+
+另外两个观察（还只是候选，未验证）：
+
+- `object + 0x78`：neutral=2、normal/veteran/champion/elite=1，看起来是**阵营**
+  （中立 / 敌对），但 npc 三个样本取值不一致，需要更多数据。
+- `descriptor + 0x40`：kind=10 时 chest=0xe、ore/wood/plant=0x13，像是**物件大类**；
+  kind=0 时这个位置放的是 `0x2000xxxx` 形式的实体 id。同一偏移在不同 kind 下含义不同，
+  说明 descriptor 是按 kind 多态的（`0x00` 处 vtable 也按 kind 分成两组）。
+
+**还没找到的**：怪物等级（Veteran/Elite/Champion/Legendary/Epic）、玩家 vs NPC、
+采集专业（矿/树/草）。角色区域的 `0x000..0x540` 里没有任何内联字符串（已扫描确认），
+所以**目标名称在别的堆分配里**，需要跟着指针去找——这正是探针里 `string` 行要做的事。
+
+名称很关键：游戏就是用名字前缀（"Veteran …"、"Champion …"）把等级告诉玩家的，
+拿到名称就能同时解决等级、采集专业和宝箱，不必再找客户端内部的 rank 字段。
+
 ## 探针
 
 ### 1. 采集日志
@@ -44,6 +73,7 @@ hexdump**（每次选择恰好一份）。输出格式：
 [reffect-target-classify] object[0x000..0x080]=...
 [reffect-target-classify] object[0x080..0x100]=...
 [reffect-target-classify] object[0x100..0x180]=...
+[reffect-target-classify] string character+0x0d0 -> 0x2a5... = "Veteran Flame Legion Charr"
 [reffect-target-classify] character[0x000..0x080]=...     (仅 kind=0)
 [reffect-target-classify] core[0x000..0x080]=...          (仅 kind=0 且可读)
 [reffect-target-classify] agent[0x000..0x080]=...         (仅 kind=0 且可读)
@@ -51,6 +81,9 @@ hexdump**（每次选择恰好一份）。输出格式：
 
 - 每个区域按 0x80 字节一行分块输出；`character` 覆盖 `0x000..0x540`（含名称、core stats
   指针、health 指针、profession 等），`object` / `core` / `agent` 各覆盖 `0x000..0x180`。
+- `string <区域>+<偏移> -> <指针> = "..."`：该偏移上的指针指向一段可打印字符串（单字节或
+  UTF-16，要求 4 字符以上、至少一个字母、并且在窗口内以 NUL 结束）。**目标名称就在这些行里**，
+  每个区域最多 12 条。
 - `character` / `agent` / `core` **只在 `kind=0` 时输出**：读取器一律用 `object - 0x48` 求
   character，对其它 kind 这个地址只是堆上的随机位置，dump 出来全是噪声。
 - `seq=N` 是本次会话内的采样序号，调试窗口会显示当前选中目标的序号，用它来标注。
@@ -70,22 +103,7 @@ cp target/release/reffect_open.dll "<GW2 安装目录>/addons/reffect_open.dll"
 用 `[Reffect Open] [INFO] Reffect v0.13.2 load` 这一行确认装上去的是新构建。
 
 > 本机现状（2026-10-08 核对）：客户端在 `E:\Games\GuildWars2`，`addons\reffect_open.dll`
-> 就是本分支的 release 构建。第一次采样（13 个目标）已经跑出来了，见下面「第一次采样」。
-
-### 第一次采样（2026-10-08，13 个目标，无标注）
-
-结论只有一条，但很重要：**`kind` 标签不能直接映射成分类**。
-
-- 13 个目标里 **10 个是 kind 10/11，只有 3 个是 kind 0**。如果按早先的假设把 kind 10/11
-  当成「大型地图物件」，绝大多数普通目标都会被错标成 `Gadget`。所以现在 `kind != 0`
-  一律返回「未知」，不再猜测。
-- 个别 kind=10 样本能读出形似合法的 `agent` / `core` 指针，但堆上指针密集，`object - 0x48`
-  又总是落在已映射的堆里，所以这**不足以**证明 kind 10 是角色。需要下一批带标注的数据才能判断。
-- descriptor 的 `0x00` 处 vtable 恰好按 kind 分成两组（kind 0 一组，kind 10/11 另一组），
-  证实 `kind` 是真实的类型标签，但语义仍未确定。
-- 这一批没有标注，也没有覆盖采集点 / 宝箱 / 各级怪物，所以无法用来定位 rank 或 agent type。
-
-下一批采样请按下面的方式在游戏里直接标注。
+> 就是本分支的 release 构建。
 
 ### 2. 在游戏里标注（不用记顺序）
 
@@ -162,17 +180,32 @@ candidates (constant per label, different across labels):
 - 未标注的样本会被丢弃并列出 `seq`；只标注一次仍然会给出「只采样一次」的警告。
 - 默认只考虑小于 `0x1000` 的值（枚举都很小）；找指针型字段（比如目标名称）时用
   `--max-value 0x8000000000000000`，但那样噪声会大很多。
+- **不同 kind 要分开跑**：`--kind 0` 只看角色，`--kind 10` 只看采集点/宝箱。工具只比较
+  「在所有样本里都可读」的偏移，而 `character` / `agent` / `core` 只有 kind=0 才有，
+  混在一起会把所有角色偏移全部排除掉（这个坑踩过一次）。
 
 ### 4. 判定方法
 
+**优先找目标名称**（探针的 `string` 行）：
+
+```
+[reffect-target-classify] string character+0x0d0 -> 0x2a5... = "Veteran Flame Legion Charr"
+```
+
+同一个标签的两个样本应该给出同一个名字；不同标签给出不同名字。找到名称后，等级就能用
+前缀判断（`Veteran ` / `Champion ` / `Legendary ` / `Elite `），采集点用名字里的
+`Ore` / `Sapling` / `Herb` 之类关键词判断，宝箱用 `Chest` 判断——这条路线不需要再找客户端
+内部的 rank 字段，而且和游戏实际告诉玩家的信息一致。**注意名称可能被本地化**（中文客户端
+会是中文名），所以关键词表要按语言分别维护，或者退回到下面的偏移方案。
+
+如果确实要读客户端内部的字段：
+
 - **怪物等级**：值域很小且单调，能对上 7 档（Ambient…Epic），并且在 kind=0 的样本里都稳定。
   注意 Champion 与 Epic 的值要能和 Legendary 区分开。
-- **agent 类型**：出现在 `agent` 区域，玩家 / 采集点 / 宝箱 / 怪物取值不同。
-  找到后就能把「玩家 vs NPC vs 采集点 vs 物件」一次拆开。
-- **阵营**：三类（友方 / 中立 / 敌方）在友好 NPC、中立生物、红名怪之间分开。
-- **采集专业**：三类（矿 / 树 / 草）在三个采集样本之间分开，通常是 `agent` 或 `object` 上的小整数。
-- **目标名称**：指针型，需要在样本间不同；定位后必须验证它指向的是一段可读字符串
-  （UTF-8 或 UTF-16），而不是其它结构。
+- **阵营**：三类（友方 / 中立 / 敌方）在友好 NPC、中立生物、红名怪之间分开。目前候选是
+  `object + 0x78`（neutral=2、hostile=1）。
+- **采集专业**：三类（矿 / 树 / 草）在三个采集样本之间分开，通常在 `object` 或 `agent` 上。
+- **玩家 vs NPC**：玩家有队伍身份（`character + 0x18`）、profession 是 1–9；NPC 不是。
 
 ## 回写
 

@@ -274,6 +274,8 @@ const PROBE_AGENT: (usize, usize) = (0x000, 0x180);
 /// Number of probe dumps after which probing stops, so a client that thrashes
 /// the target descriptor cannot flood the log.
 const PROBE_LIMIT: u32 = 256;
+/// Maximum strings logged per region by the probe.
+const PROBE_STRING_LIMIT: usize = 12;
 
 /// Sequence of the target classification probe dump for the currently selected
 /// target; 0 when no target is selected or the probe limit was reached.
@@ -2966,6 +2968,8 @@ fn log_target_classification_probe(
 
     probe_region(game, "descriptor", descriptor, PROBE_DESCRIPTOR);
     probe_region(game, "object", object, PROBE_OBJECT);
+    probe_strings(game, "descriptor", descriptor, PROBE_DESCRIPTOR);
+    probe_strings(game, "object", object, PROBE_OBJECT);
 
     // `character` is `object - 0x48` regardless of kind, so it is only a real
     // character for kind 0. Dumping it for the other kinds would only add noise
@@ -2973,14 +2977,93 @@ fn log_target_classification_probe(
     if kind == 0 {
         if let Some(character) = character {
             probe_region(game, "character", character, PROBE_CHARACTER);
+            probe_strings(game, "character", character, PROBE_CHARACTER);
         }
         if let Some(core) = core {
             probe_region(game, "core", core, PROBE_CORE_STATS);
+            probe_strings(game, "core", core, PROBE_CORE_STATS);
         }
         if let Some(agent) = agent {
             probe_region(game, "agent", agent, PROBE_AGENT);
+            probe_strings(game, "agent", agent, PROBE_AGENT);
         }
     }
+}
+
+/// Logs every pointer in `[start, end)` at `base` that points at a printable
+/// string, so the target's name can be located.
+///
+/// The name is what the game shows in the target frame, and the NPC rank is
+/// conveyed as its "Veteran"/"Champion"/... prefix, so a readable name would
+/// classify rank, gathering discipline and chests without needing the client's
+/// internal rank field at all.
+fn probe_strings(game: &impl GameMemory, name: &str, base: usize, range: (usize, usize)) {
+    let (start, end) = range;
+    let mut offset = start;
+    let mut found = 0;
+
+    while offset + size_of::<usize>() <= end {
+        let pointer = value_at::<usize>(game, base, offset);
+        if let Some(pointer) = pointer
+            && valid_pointer(pointer)
+            && let Some(text) = read_probe_string(game, pointer)
+        {
+            log::warn!(
+                "[reffect-target-classify] string {name}+{offset:#05x} -> {pointer:#x} = {text}"
+            );
+            found += 1;
+            if found >= PROBE_STRING_LIMIT {
+                return;
+            }
+        }
+        offset += size_of::<usize>();
+    }
+}
+
+/// Reads a NUL terminated printable string at `address`, accepting either
+/// single byte characters or UTF-16 code units.
+///
+/// Requiring the terminator, a minimum length and a letter keeps random
+/// pointers that happen to land in mapped memory from looking like strings.
+fn read_probe_string(game: &impl GameMemory, address: usize) -> Option<String> {
+    const MAX: usize = 96;
+
+    let mut narrow = String::new();
+    let mut terminated = false;
+    for index in 0..MAX {
+        match value_at::<u8>(game, address, index) {
+            Some(0) => {
+                terminated = true;
+                break;
+            }
+            Some(byte) if (0x20..0x7f).contains(&byte) => narrow.push(byte as char),
+            _ => break,
+        }
+    }
+    if terminated && narrow.chars().count() >= 4 && narrow.chars().any(|c| c.is_alphabetic()) {
+        return Some(narrow);
+    }
+
+    let mut wide = String::new();
+    let mut terminated = false;
+    for index in 0..MAX / 2 {
+        match value_at::<u16>(game, address, index * 2) {
+            Some(0) => {
+                terminated = true;
+                break;
+            }
+            Some(unit) => match char::from_u32(u32::from(unit)) {
+                Some(character) if !character.is_control() => wide.push(character),
+                _ => break,
+            },
+            None => break,
+        }
+    }
+    if terminated && wide.chars().count() >= 4 && wide.chars().any(char::is_alphabetic) {
+        return Some(wide);
+    }
+
+    None
 }
 
 /// Formats an optional pointer for the probe log as `0x...`/`None`.
@@ -3168,6 +3251,7 @@ mod tests {
     #[derive(Default)]
     struct LegacyMixedTreeMemory {
         words: std::collections::BTreeMap<usize, u64>,
+        bytes: std::collections::BTreeMap<usize, u8>,
         reads: std::sync::atomic::AtomicUsize,
     }
 
@@ -3184,6 +3268,13 @@ mod tests {
             self.u32(address, value.to_bits());
         }
 
+        /// Stores byte granular data, for the string reader.
+        fn bytes(&mut self, address: usize, data: &[u8]) {
+            for (index, byte) in data.iter().enumerate() {
+                self.bytes.insert(address + index, *byte);
+            }
+        }
+
         fn read_count(&self) -> usize {
             self.reads.load(std::sync::atomic::Ordering::Relaxed)
         }
@@ -3193,14 +3284,25 @@ mod tests {
         fn read<T: Copy>(&self, address: usize) -> Option<T> {
             self.reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let word = *self.words.get(&address)?;
             match std::mem::size_of::<T>() {
-                4 => {
-                    let value = word as u32;
-                    // The fixture only exercises the reader's u32 and usize loads.
+                1 => {
+                    let value = *self.bytes.get(&address)?;
                     Some(unsafe { std::mem::transmute_copy(&value) })
                 }
-                8 => Some(unsafe { std::mem::transmute_copy(&word) }),
+                2 => {
+                    let low = u16::from(*self.bytes.get(&address)?);
+                    let high = u16::from(*self.bytes.get(&(address + 1))?);
+                    let value = low | (high << 8);
+                    Some(unsafe { std::mem::transmute_copy(&value) })
+                }
+                4 => {
+                    let value = *self.words.get(&address)? as u32;
+                    Some(unsafe { std::mem::transmute_copy(&value) })
+                }
+                8 => {
+                    let value = *self.words.get(&address)?;
+                    Some(unsafe { std::mem::transmute_copy(&value) })
+                }
                 _ => None,
             }
         }
@@ -4978,6 +5080,46 @@ mod tests {
 
         let buff = buffs.get(&9283).expect("long-duration effect is published");
         assert!(buff.is_infinite());
+    }
+
+    #[test]
+    fn probe_string_reads_narrow_and_wide_names() {
+        let mut memory = LegacyMixedTreeMemory::default();
+        memory.bytes(0x1000, b"Veteran Flame Legion Charr\0");
+        let wide: Vec<u8> = "Champion Karka"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .chain([0, 0])
+            .collect();
+        memory.bytes(0x2000, &wide);
+
+        assert_eq!(
+            read_probe_string(&memory, 0x1000).as_deref(),
+            Some("Veteran Flame Legion Charr")
+        );
+        assert_eq!(
+            read_probe_string(&memory, 0x2000).as_deref(),
+            Some("Champion Karka")
+        );
+    }
+
+    #[test]
+    fn probe_string_rejects_values_that_are_not_names() {
+        let mut memory = LegacyMixedTreeMemory::default();
+        // Unmapped pointer target.
+        assert_eq!(read_probe_string(&memory, 0x3000), None);
+
+        // Too short to be a name.
+        memory.bytes(0x4000, b"ab\0");
+        assert_eq!(read_probe_string(&memory, 0x4000), None);
+
+        // Control bytes, not text.
+        memory.bytes(0x5000, &[0x01, 0x02, 0x03, 0x04, 0, 0]);
+        assert_eq!(read_probe_string(&memory, 0x5000), None);
+
+        // No terminator inside the read window.
+        memory.bytes(0x6000, &[b'a'; 200]);
+        assert_eq!(read_probe_string(&memory, 0x6000), None);
     }
 
     #[test]

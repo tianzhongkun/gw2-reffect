@@ -136,6 +136,26 @@ class ParseSamplesTest(unittest.TestCase):
         self.assertEqual(samples[0].label, "ore")
         self.assertIsNone(samples[0].sequence)
 
+    def test_merges_chunked_regions(self) -> None:
+        # A wide region is emitted as several chunks. Replacing instead of
+        # merging silently compares only the last chunk, which hid every field
+        # outside it.
+        text = "\n".join(
+            [
+                "[reffect-target-classify] seq=1 kind=0 descriptor=0x1 object=0x10 "
+                "character=None agent=None core=None",
+                "[reffect-target-classify] character[0x000..0x008]=00000001 00000002 ",
+                "[reffect-target-classify] character[0x008..0x010]=00000003 00000004 ",
+            ]
+        )
+
+        samples = parse_samples(text)
+
+        self.assertEqual(
+            samples[0].regions["character"],
+            {0x000: 1, 0x004: 2, 0x008: 3, 0x00C: 4},
+        )
+
     def test_keeps_unreadable_words_as_none(self) -> None:
         text = "\n".join(probe_block(character_words=[1, None, 3]))
 
