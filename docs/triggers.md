@@ -74,9 +74,17 @@ are `Wood` and harvesting nodes are `Plant`.
 
 Selecting nothing keeps the trigger inactive.
 
-**Note:** the client fields for disposition, rank and gathering discipline are
-not recovered yet, so a target that cannot be classified leaves the trigger
-inactive instead of guessing. The debug window shows the current classification.
+**What is currently classified:** a grouped player (`Player`, `Ally`), a chest
+(`Chest`), a gathering node (`Gatherable`) and an Epic world boss
+(`Monster`, `Hostile`, `Epic`). Everything else leaves the trigger inactive
+rather than guessing, and the debug window shows the current classification.
+
+**Not recovered yet:** the NPC rank of ordinary monsters, the disposition of
+non-player targets and the gathering discipline (ore / wood / plant). The rank is
+conveyed to the player as the "Veteran"/"Champion"/... name prefix, and no field
+in the character, agent or core stats carries it, so it is expected to live on a
+shared species record. See
+[the recovery plan](./superpowers/plans/2026-10-08-target-classification-recovery.md).
 
 [NPC rank]: https://wiki.guildwars2.com/wiki/NPC_rank
 

@@ -261,6 +261,12 @@ const TARGET_HEALTH_KIND_11: usize = 0x220;
 const TARGET_EFFECTS_KIND_11: usize = 0x170;
 const TARGET_DEFIANCE_KIND_11: usize = 0x168;
 const SELECTED_CHARACTER_BIAS: usize = 0x48;
+/// Object type on the target descriptor for kinds that are not characters,
+/// recovered on 2026-10-08: six different gathering nodes (mining, logging and
+/// harvesting) all carried `0x13` and two different chests carried `0x0e`.
+const TARGET_OBJECT_TYPE: usize = 0x40;
+const OBJECT_TYPE_CHEST: u32 = 0x0e;
+const OBJECT_TYPE_GATHERABLE: u32 = 0x13;
 /// Regions dumped by the target classification probe
 /// (`log_target_classification_probe`), as `(start, end)` byte offsets from the
 /// region base, emitted in `PROBE_CHUNK` sized hexdump lines. Only used for
@@ -2824,7 +2830,7 @@ fn read_target(
         return None;
     }
     log_target_classification_probe(game, kind, descriptor, object, character);
-    let (affinity, category) = read_target_classification(game, local, kind, character);
+    let (affinity, category) = read_target_classification(game, local, kind, descriptor, character);
     let (health, barrier_layout, container, defiance) = match kind {
         0 => (
             character.and_then(|character| pointer_at(game, character, CHARACTER_HEALTH)),
@@ -2882,29 +2888,33 @@ fn read_target(
 /// Classifies the selected target from the fields the recovered read graph
 /// exposes today.
 ///
-/// Only structurally certain results are published: a character that is also a
-/// current group member is an allied player, which needs no new client offset.
+/// Recovered against labelled captures on 2026-10-08:
 ///
-/// Everything else stays unclassified. The client fields carrying the agent
-/// type, disposition, NPC rank and gathering discipline are not part of the
-/// recovered read graph yet, and guessing them would make classification
-/// triggers fire on the wrong targets. An unclassified target publishes
-/// `Error::TargetState`/`Error::Affinity`, which keeps classification triggers
-/// inactive and shows the gap in the debug view instead of inventing a value.
+/// - a character that is also a current group member is an allied player
+/// - kind 10 targets are environmental objects, and their descriptor object type
+///   distinguishes a chest (`0x0e`) from a gathering node (`0x13`). Six
+///   different nodes (mining, logging and harvesting) shared `0x13` and two
+///   different chests shared `0x0e`, so the field is type level, not per
+///   instance.
+/// - kind 11 targets are the prop objects used by Epic world bosses, tagged as
+///   `epic` on four samples across two sessions and two different bosses.
 ///
-/// The target descriptor `kind` tag is deliberately **not** mapped to a
-/// category. An earlier revision published `Gadget` for kinds 10 and 11 on the
-/// assumption that they are the large map-break carrier objects, but the first
-/// probe capture (2026-10-08, 13 selected targets) showed 10 of them were kind
-/// 10 or 11 while only 3 were kind 0, and some kind 10 targets exposed a valid
-/// character, agent and core-stats chain. Until the tag semantics are recovered,
-/// mapping it would mislabel ordinary targets.
+/// Everything else stays unclassified. In particular **no offset in the
+/// character, agent or core stats carries the NPC rank**: across normal,
+/// veteran and legendary samples from different monsters, only three fields were
+/// constant within a label and none of them took one value per rank. The rank is
+/// conveyed to the player as the "Veteran"/"Champion"/... name prefix, so it is
+/// expected to live on a shared species record rather than on the instance.
+/// Guessing would make classification triggers fire on the wrong targets, so an
+/// unclassified target publishes `Error::TargetState`/`Error::Affinity`, which
+/// keeps the trigger inactive and shows the gap in the debug view.
 ///
 /// See [`log_target_classification_probe`] for how those offsets are recovered.
 fn read_target_classification(
     game: &impl GameMemory,
     local: usize,
     kind: u32,
+    descriptor: usize,
     character: Option<usize>,
 ) -> (
     Result<Affinity, Error>,
@@ -2912,26 +2922,43 @@ fn read_target_classification(
 ) {
     let unclassified = (Err(Error::Affinity), Err(Error::TargetState));
 
-    if kind != 0 {
-        return unclassified;
-    }
-    let Some(character) = character else {
-        return unclassified;
-    };
-    // The group member table stores the member character pointers, so a direct
-    // match identifies the target as an allied player without needing any new
-    // client offset.
-    let is_group_member = read_group_characters(game, local)
-        .unwrap_or_default()
-        .iter()
-        .any(|(_, member)| *member == character);
-    if is_group_member {
-        (
-            Ok(Affinity::Friendly),
-            Ok(make_bitflags!(TargetCategory::{Player | Friendly})),
-        )
-    } else {
-        unclassified
+    match kind {
+        0 => {
+            let Some(character) = character else {
+                return unclassified;
+            };
+            // The group member table stores the member character pointers, so a
+            // direct match identifies the target as an allied player without
+            // needing any new client offset.
+            let is_group_member = read_group_characters(game, local)
+                .unwrap_or_default()
+                .iter()
+                .any(|(_, member)| *member == character);
+            if is_group_member {
+                (
+                    Ok(Affinity::Friendly),
+                    Ok(make_bitflags!(TargetCategory::{Player | Friendly})),
+                )
+            } else {
+                unclassified
+            }
+        }
+        10 => match value_at::<u32>(game, descriptor, TARGET_OBJECT_TYPE) {
+            Some(OBJECT_TYPE_CHEST) => (
+                Err(Error::Affinity),
+                Ok(BitFlags::from(TargetCategory::Chest)),
+            ),
+            Some(OBJECT_TYPE_GATHERABLE) => (
+                Err(Error::Affinity),
+                Ok(BitFlags::from(TargetCategory::Gatherable)),
+            ),
+            _ => unclassified,
+        },
+        11 => (
+            Ok(Affinity::Hostile),
+            Ok(make_bitflags!(TargetCategory::{Monster | Hostile | Epic})),
+        ),
+        _ => unclassified,
     }
 }
 
@@ -5409,6 +5436,7 @@ mod tests {
         let member_table = 0x40_000;
         let entries = 0x50_000;
         let member_entry = 0x60_000;
+        let descriptor = 0x70_000;
         let mut memory = LegacyMixedTreeMemory::default();
 
         store_identity(&mut memory, member + CHARACTER_GROUP_IDENTITY, 1, 2);
@@ -5420,7 +5448,8 @@ mod tests {
 
         // A character that is a current group member is an allied player: this
         // needs no new client offset, so it is classified today.
-        let (affinity, category) = read_target_classification(&memory, local, 0, Some(member));
+        let (affinity, category) =
+            read_target_classification(&memory, local, 0, descriptor, Some(member));
         assert!(matches!(affinity, Ok(Affinity::Friendly)));
         assert!(matches!(
             category,
@@ -5429,24 +5458,52 @@ mod tests {
 
         // Any other character stays unknown rather than being guessed at, so a
         // classification trigger cannot fire on the wrong target.
-        let (affinity, category) = read_target_classification(&memory, local, 0, Some(stranger));
+        let (affinity, category) =
+            read_target_classification(&memory, local, 0, descriptor, Some(stranger));
         assert!(matches!(affinity, Err(Error::Affinity)));
         assert!(matches!(category, Err(Error::TargetState)));
 
         // Kind 0 without a character pointer is unknown too.
-        let (_, category) = read_target_classification(&memory, local, 0, None);
+        let (_, category) = read_target_classification(&memory, local, 0, descriptor, None);
         assert!(matches!(category, Err(Error::TargetState)));
 
-        // Kinds other than 0 stay unknown. An earlier revision mapped kinds 10
-        // and 11 to `Gadget`, but the first probe capture showed they cover
-        // ordinary targets too, so the tag is not mapped until it is understood.
-        for kind in [10, 11, 7] {
-            let (_, category) = read_target_classification(&memory, local, kind, None);
-            assert!(matches!(category, Err(Error::TargetState)));
-        }
+        // Kind 10 objects are classified by their descriptor object type.
+        memory.u32(descriptor + TARGET_OBJECT_TYPE, OBJECT_TYPE_CHEST);
+        let (_, category) = read_target_classification(&memory, local, 10, descriptor, None);
+        assert!(matches!(
+            category,
+            Ok(flags) if flags == BitFlags::from(TargetCategory::Chest)
+        ));
+
+        memory.u32(descriptor + TARGET_OBJECT_TYPE, OBJECT_TYPE_GATHERABLE);
+        let (_, category) = read_target_classification(&memory, local, 10, descriptor, None);
+        assert!(matches!(
+            category,
+            Ok(flags) if flags == BitFlags::from(TargetCategory::Gatherable)
+        ));
+
+        // An unknown object type stays unknown.
+        memory.u32(descriptor + TARGET_OBJECT_TYPE, 0x42);
+        let (_, category) = read_target_classification(&memory, local, 10, descriptor, None);
+        assert!(matches!(category, Err(Error::TargetState)));
+
+        // Kind 11 is the prop object of an Epic world boss.
+        let (affinity, category) = read_target_classification(&memory, local, 11, descriptor, None);
+        assert!(matches!(affinity, Ok(Affinity::Hostile)));
+        assert!(matches!(
+            category,
+            Ok(flags) if flags == make_bitflags!(TargetCategory::{Monster | Hostile | Epic})
+        ));
 
         // A group member is only recognised through the kind 0 character path.
-        let (_, category) = read_target_classification(&memory, local, 10, Some(member));
+        let (_, category) =
+            read_target_classification(&memory, local, 10, descriptor, Some(member));
         assert!(matches!(category, Err(Error::TargetState)));
+
+        // Unknown kinds stay unknown.
+        for kind in [7, 12] {
+            let (_, category) = read_target_classification(&memory, local, kind, descriptor, None);
+            assert!(matches!(category, Err(Error::TargetState)));
+        }
     }
 }

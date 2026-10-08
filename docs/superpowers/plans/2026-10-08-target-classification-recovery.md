@@ -63,14 +63,44 @@
   `RealTimeApi::get()` 返回 `None`。名称标定已改用 **Mumble 链接**（由 Nexus 自己创建，
   日志里能看到 `Created public shared resource: "DL_MUMBLE_LINK"`）。
 
-**还没找到的**：怪物等级（Veteran/Elite/Champion/Legendary/Epic）、玩家 vs NPC、
-采集专业（矿/树/草）。角色区域的 `0x000..0x540` 里没有任何内联字符串（已扫描确认），
+**还没找到的**：普通怪物的等级、非玩家目标的阵营、采集专业（矿/树/草）。
+角色区域的 `0x000..0x540` 里没有任何内联字符串（已扫描确认），
 `string` 扫描也只捞到随机堆字节——**目标名称在更深的地方**。
 
 所以改成用**已知答案去标定**：读取器从 Mumble 拿到自己角色的名字，在自己的 character /
 agent / core 里搜这个名字，命中的偏移就是名称字段（见下面 `local` / `name pointer` /
 `name inline` 行）。名称很关键：游戏就是用名字前缀（"Veteran …"、"Champion …"）把等级
 告诉玩家的，拿到名称就能同时解决等级、采集专业和宝箱，不必再找客户端内部的 rank 字段。
+
+**第四次采样（2026-10-08，4 个等级）——等级字段的否定结果：**
+
+用 normal / veteran / legendary 三个标签、每个标签两只**不同**的怪对比后，
+character（`0x000..0x1000`）、agent（`0x000..0x1000`）、core（`0x000..0x400`）里
+**只有 3 个字段在标签内恒定**：
+
+```
+character 0x00288   normal=0x5  veteran=0x5  legendary=0x3
+character 0x000cc   normal=0x0  veteran=0x0  legendary=0x1d7
+character 0x00114   normal=0x0  veteran=0x0  legendary=0x1d7
+```
+
+后两个是指针高 32 位（堆 arena），是噪声。`0x288` 只有两个取值，而且它在两次会话之间
+不一致（上一次 normal=2、veteran=5），所以也不是等级。
+
+结论：**等级不在这三个结构的这些范围内**。等级是通过名字前缀（"Veteran …"）告诉玩家的，
+所以它更可能属于**共享的物种记录**，而不是每个实例上。这也是为什么名称仍然是关键。
+
+**同时确认并已经写进读取器的分类：**
+
+| 判定 | 依据 |
+| --- | --- |
+| kind 10 + `descriptor + 0x40 == 0x0e` → `Chest` | 2 只不同的宝箱 |
+| kind 10 + `descriptor + 0x40 == 0x13` → `Gatherable` | 6 个不同的采集点（矿/树/草都有） |
+| kind 11 → `Monster + Hostile + Epic` | 4 个样本、2 次会话、2 只不同的世界 boss |
+| kind 0 + 队伍成员 → `Player + Friendly` | 队伍成员表 |
+
+`descriptor + 0x40` 在 6 个不同采集点上都取 `0x13`、2 个不同宝箱上都取 `0x0e`，
+说明它是**类型级**字段而不是每实例字段——这一点很关键，否则不会采用。
 
 ## 探针
 
