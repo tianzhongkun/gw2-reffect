@@ -244,3 +244,44 @@ are absent from the binary, and a Necromancer (not an Ele) was loaded during the
 live session, so the true charge offsets still need an Elementalist character
 loaded in the client. The reusable live-resolution method is captured in the
 `ce-live-pointer-chain` memory.
+
+## Ranger pet resolution — FIXED (live, 2026-10-12)
+
+Reported: a Ranger / Untamed (狂兽师) could not read F1-F3 in the
+ranger-unleashed state (觉醒游侠) while the original could.
+
+Root cause: the recovery resolved the owned companion as
+`char+0x3F8 (kennel) + 0xF8` for **every** profession. That slot is the
+Mechanist mech / sixth companion record. The original collector
+`sub_1800E2EC0` branches on the profession:
+
+* Engineer (`case 2`, Mechanist): `*(kennel + 0xF8)` — unchanged.
+* Ranger (`case 3`, every spec): `*(kennel + 0x30 + 40 * qword_1801B0D98[*(kennel + 0x100)])`,
+  gated on `((0x2F >> index) & (index < 6)) != 0`. The static map
+  `qword_1801B0D98` (`.rdata 0x1B0D98`) is `[0, 1, 2, 3, 0, 5]`.
+
+The second half of the same call is `sub_1800E2560`'s `a4` flag, which the
+collector sets to `1` for the Mechanist (spec 70) and for the Untamed
+(spec 72) and to `0` for every other ranger spec; with `a4 == 0` the function
+returns right after the second pet command, so only F2 can come from the pet.
+
+Live verification against the running 0.13.1 client (Cheat Engine MCP, TLS
+chain as in `ce-live-pointer-chain`; the original's own published player state
+is `*(Reffect.dll + 0x237888)`, ability records 40 bytes each, id at `+4`):
+
+| state | kennel `+0x100` | `+0xF8` | pet | our reader F1/F2/F3 | original F1/F2/F3 |
+|---|---|---|---|---|---|
+| ranger unleashed | 0 | **0** | `kennel+0x30` | 12719 / 20975 / 12720 | 12719 / 20975 / 12720 |
+| pet unleashed | 0 | **0** | `kennel+0x30` | 63209 / 63258 / 63094 | 63209 / 63258 / 63094 |
+
+In the first state the player's own profession slots (combatant raw 12-15) are
+empty and the pet commands fill F1-F3; in the second they hold the skills
+directly and the pet fallback correctly leaves them alone. The old code read
+`+0xF8 == 0` in both states, so the first state published nothing. Every other
+published slot (weapons, heal, utilities, elite, F5, special action, mount)
+matched the original in the same comparison.
+
+Fixed in `reffect_internal/src/game/state.rs` (`owned_pet_character` /
+`ranger_pet_character` / `pet_skill_slots`), with four regression tests seeded
+from the live layout; `cargo test -p reffect_internal --lib` = 125 passed.
+

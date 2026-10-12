@@ -181,7 +181,24 @@ const COOLDOWN_NODE_AMMO_STATE: usize = 0x24;
 const COOLDOWN_NODE_AMMO: usize = 0x28;
 const COOLDOWN_NODE_NEXT: usize = 0x08;
 const CHARACTER_KENNEL: usize = 0x3F8;
+/// Single-companion slot of the kennel; holds the Mechanist mech.
 const KENNEL_PRIMARY_PET: usize = 0xF8;
+/// Ranger active-pet index inside the kennel (`sub_1800E2EC0` case 3 reads
+/// `*(kennel + 0x100)`).
+const KENNEL_PET_INDEX: usize = 0x100;
+/// Base of the six 40-byte companion records the pet index selects from.
+const KENNEL_COMPANION_BASE: usize = 0x30;
+const KENNEL_COMPANION_STRIDE: usize = 40;
+/// Pet-index → companion record map: the original indexes the record array with
+/// the static table `qword_1801B0D98` (`40 * table[index] + 48`), whose values
+/// are `[0, 1, 2, 3, 0, 5]`.
+const KENNEL_PET_RECORDS: [usize; 6] = [0, 1, 2, 3, 0, 5];
+/// Pet indices the original accepts: `((0x2F >> index) & (index < 6)) != 0`.
+const KENNEL_PET_INDEX_MASK: u32 = 0x2F;
+const PROFESSION_ENGINEER: u8 = 3;
+const PROFESSION_RANGER: u8 = 4;
+const SPEC_ENGINEER_MECHANIST: u32 = 70;
+const SPEC_RANGER_UNTAMED: u32 = 72;
 const CHARACTER_BUILD_HOLDER: usize = 0x1E8;
 const BUILD_HOLDER_VIEW: usize = 0x90;
 const BUILD_VIEW_SLOT_BIAS: usize = 0x50;
@@ -717,7 +734,7 @@ fn decode_snapshot(
         read_player_resources_for_profession_at(game, character, profession, specialization, now);
     let buffs = read_player_buff_info(game, buff_cache, character, now);
     let gear = read_gear(game, character);
-    let skillbar = read_skillbar(game, character, now);
+    let skillbar = read_skillbar(game, character, profession, specialization, now);
     if let (Some(build), Some(skillbar), Some(slot)) =
         (build.as_mut(), skillbar.as_ref(), build_slot)
     {
@@ -1035,7 +1052,7 @@ fn read_player_resources_for_profession_at(
     now: u32,
 ) -> Option<PlayerResourceSnapshot> {
     let combatant = read_combatant_resources(game, character, now)?;
-    let pet = owned_pet_character(game, character)
+    let pet = owned_pet_character(game, character, profession)
         .and_then(|pet| read_combatant_resources(game, pet, now));
     let endurance = pointer_at(game, character, CHARACTER_ENDURANCE)
         .and_then(|endurance| {
@@ -1479,10 +1496,50 @@ fn interpolate_sampled(
     (base_current + elapsed * rate).clamp(0.0, max)
 }
 
-fn owned_pet_character(game: &impl GameMemory, character: usize) -> Option<usize> {
-    pointer_at(game, character, CHARACTER_KENNEL)
-        .and_then(|kennel| pointer_at(game, kennel, KENNEL_PRIMARY_PET))
-        .filter(|pet| is_owned_companion_address(character, *pet))
+/// Resolves the owned companion character whose resources and profession skills
+/// the player state publishes (Ranger pet, Mechanist mech).
+///
+/// The original collector (`sub_1800E2EC0`) branches on the profession:
+///
+/// * Engineer (`case 2`, Mechanist only): the single companion pointer at
+///   `kennel + 0xF8`.
+/// * Ranger (`case 3`, every ranger spec): one of six 40-byte companion records
+///   at `kennel + 0x30`, selected by the active pet index at `kennel + 0x100`
+///   through the static map `qword_1801B0D98` (`[0,1,2,3,0,5]`) and gated on
+///   `0x2F >> index`.
+///
+/// The recovery read `kennel + 0xF8` for every profession. That slot is the
+/// mech / sixth companion record, so a live Untamed ranger — pet index 0, the
+/// active pet in record 0, `kennel + 0xF8 == 0` — resolved no pet at all and
+/// left F1-F3 empty, while the original published the pet commands
+/// (live-verified 2026-10-12: the original's F1/F2/F3 read 12719/20975/12720,
+/// exactly the pet combatant's raw slots 6/11/7).
+fn owned_pet_character(
+    game: &impl GameMemory,
+    character: usize,
+    profession: Option<u8>,
+) -> Option<usize> {
+    let kennel = pointer_at(game, character, CHARACTER_KENNEL)?;
+    let pet = match profession {
+        Some(PROFESSION_RANGER) => ranger_pet_character(game, kennel),
+        _ => pointer_at(game, kennel, KENNEL_PRIMARY_PET),
+    };
+    pet.filter(|pet| is_owned_companion_address(character, *pet))
+}
+
+/// Resolves the Ranger's active pet from the kennel's companion records. An
+/// index the original rejects (or an unreadable record) means no pet.
+fn ranger_pet_character(game: &impl GameMemory, kennel: usize) -> Option<usize> {
+    let index = value_at::<u32>(game, kennel, KENNEL_PET_INDEX)? as usize;
+    if index >= KENNEL_PET_RECORDS.len() || KENNEL_PET_INDEX_MASK & (1 << index) == 0 {
+        return None;
+    }
+    let record = KENNEL_PET_RECORDS[index];
+    pointer_at(
+        game,
+        kennel,
+        KENNEL_COMPANION_BASE.checked_add(record.checked_mul(KENNEL_COMPANION_STRIDE)?)?,
+    )
 }
 
 /// Reads the defiance bar. `None` means the combatant has no readable defiance
@@ -1514,12 +1571,18 @@ fn read_defiance_at(game: &impl GameMemory, defiance: Option<usize>) -> Option<D
     }
 }
 
-fn read_skillbar(game: &impl GameMemory, character: usize, now: u32) -> Option<SkillbarSnapshot> {
+fn read_skillbar(
+    game: &impl GameMemory,
+    character: usize,
+    profession: Option<u8>,
+    specialization: Option<u32>,
+    now: u32,
+) -> Option<SkillbarSnapshot> {
     let combatant = pointer_at(game, character, CHARACTER_COMBATANT)?;
     let mut cooldowns = BTreeMap::new();
     collect_cooldowns(game, combatant, &mut cooldowns, now);
 
-    let pet_combatant = owned_pet_character(game, character)
+    let pet_combatant = owned_pet_character(game, character, profession)
         .and_then(|pet| pointer_at(game, pet, CHARACTER_COMBATANT));
     if let Some(pet_combatant) = pet_combatant {
         collect_cooldowns(game, pet_combatant, &mut cooldowns, now);
@@ -1552,7 +1615,7 @@ fn read_skillbar(game: &impl GameMemory, character: usize, now: u32) -> Option<S
     // genuinely empty profession slot and never replace a local skilldef,
     // matching the original reader's `sub_1800E2560`.
     if let Some(pet_combatant) = pet_combatant {
-        for (raw, slot) in PET_SKILL_SLOTS {
+        for &(raw, slot) in pet_skill_slots(profession, specialization) {
             if skillbar.slot(slot).is_none()
                 && let Some((id, definition)) = read_skill_definition(game, pet_combatant, raw)
             {
@@ -1897,6 +1960,39 @@ const PET_SKILL_SLOTS: [(usize, Slot); 3] = [
     (11, Slot::Profession2),
     (7, Slot::Profession3),
 ];
+
+/// The subset the original publishes for a ranger spec other than the Untamed:
+/// with `a4 == 0` it returns right after the second pet command.
+const PET_SKILL_SLOTS_SECONDARY: [(usize, Slot); 1] = [(11, Slot::Profession2)];
+
+/// Pet-combatant raw slots the original fills into the player's profession slots
+/// for the current profession and elite spec.
+///
+/// `sub_1800E2560` takes an `a4` flag that gates whether the pet commands beyond
+/// the second one are published: the collector passes `1` for the Mechanist
+/// (spec 70) and for the Untamed (spec 72), and `0` for every other ranger spec.
+/// With `a4 == 0` only `Profession2` can come from the pet. The Mechanist is
+/// also the only Engineer case the original calls the pet reader for at all. An
+/// unreadable spec keeps the full set, so the commands still surface instead of
+/// silently disappearing.
+fn pet_skill_slots(
+    profession: Option<u8>,
+    specialization: Option<u32>,
+) -> &'static [(usize, Slot)] {
+    match profession {
+        Some(PROFESSION_ENGINEER)
+            if specialization.is_some_and(|spec| spec != SPEC_ENGINEER_MECHANIST) =>
+        {
+            &[]
+        }
+        Some(PROFESSION_RANGER)
+            if specialization.is_some_and(|spec| spec != SPEC_RANGER_UNTAMED) =>
+        {
+            &PET_SKILL_SLOTS_SECONDARY
+        }
+        _ => &PET_SKILL_SLOTS,
+    }
+}
 
 fn slot_map() -> [(usize, Slot); 17] {
     [
@@ -4797,7 +4893,7 @@ mod tests {
         memory.u32(combatant + 0x28C, 1_000);
         memory.u32(combatant + 0x290, 8_000);
 
-        let skillbar = read_skillbar(&memory, character, 1_500)
+        let skillbar = read_skillbar(&memory, character, None, None, 1_500)
             .expect("a valid standalone weapon-swap state must publish a skillbar");
         let weapon_swap = skillbar
             .bar
@@ -4823,7 +4919,7 @@ mod tests {
         memory.u32(combatant + 0x28C, 1_000);
         memory.u32(combatant + 0x290, 8_000);
 
-        assert!(read_skillbar(&memory, character, 1_500).is_none());
+        assert!(read_skillbar(&memory, character, None, None, 1_500).is_none());
     }
 
     #[test]
@@ -4851,7 +4947,7 @@ mod tests {
         memory.u32(ammo_node + 0x24, 1);
         memory.u32(ammo_node + 0x28, 2);
 
-        let skillbar = read_skillbar(&memory, character, 2_000).expect("skillbar");
+        let skillbar = read_skillbar(&memory, character, None, None, 2_000).expect("skillbar");
         let ability = skillbar.bar.slot(Slot::Heal).expect("heal ability");
 
         assert_eq!(ability.ammo, 2);
@@ -4893,7 +4989,7 @@ mod tests {
         memory.u32(node2 + COOLDOWN_NODE_REMAINING, 2_000);
         memory.u32(node2 + COOLDOWN_NODE_TOTAL, 8_000);
 
-        let snapshot = read_skillbar(&memory, character, 10_000).expect("skillbar");
+        let snapshot = read_skillbar(&memory, character, None, None, 10_000).expect("skillbar");
 
         let heal_ability = snapshot.bar.slot(Slot::Heal).expect("heal ability");
         assert_eq!(heal_ability.id, SkillId::Id(111));
@@ -4918,7 +5014,8 @@ mod tests {
         // combatant: the original reader maps pet slot 6 to Profession 1, slot 11
         // to Profession 2 and slot 7 to Profession 3, and publishes no fourth
         // pet skill. Getting this wrong showed the mech's skills in the wrong
-        // F1-F3 slots.
+        // F1-F3 slots. The Mechanist is the profession case that reads the
+        // single companion pointer at `kennel + 0xF8`.
         let character = 0x10_000;
         let combatant = 0x20_000;
         let kennel = 0x30_000;
@@ -4940,7 +5037,14 @@ mod tests {
             memory.u32(definition + SKILLDEF_ID, id);
         }
 
-        let snapshot = read_skillbar(&memory, character, 2_000).expect("skillbar");
+        let snapshot = read_skillbar(
+            &memory,
+            character,
+            Some(PROFESSION_ENGINEER),
+            Some(SPEC_ENGINEER_MECHANIST),
+            2_000,
+        )
+        .expect("skillbar");
         let bar = &snapshot.bar;
         let id = |slot| bar.slot(slot).map(|ability| ability.id);
 
@@ -4981,7 +5085,14 @@ mod tests {
         );
         memory.u32(pet_definition + SKILLDEF_ID, 63_121);
 
-        let snapshot = read_skillbar(&memory, character, 2_000).expect("skillbar");
+        let snapshot = read_skillbar(
+            &memory,
+            character,
+            Some(PROFESSION_ENGINEER),
+            Some(SPEC_ENGINEER_MECHANIST),
+            2_000,
+        )
+        .expect("skillbar");
         let ability = snapshot
             .bar
             .slot(Slot::Profession1)
@@ -5016,11 +5127,186 @@ mod tests {
         memory.u32(node + COOLDOWN_NODE_REMAINING, 16_000);
         memory.u32(node + COOLDOWN_NODE_TOTAL, 16_000);
 
-        let snapshot = read_skillbar(&memory, character, 1_000).expect("skillbar");
+        let snapshot = read_skillbar(&memory, character, None, None, 1_000).expect("skillbar");
         let ability = snapshot.bar.slot(Slot::Heal).expect("heal ability");
 
         assert_eq!(ability.recharge, 16_000);
         assert_eq!(ability.recharge_remaining(1_000), 16_000);
+    }
+
+    #[test]
+    fn ranger_pet_comes_from_the_active_pet_index_not_the_primary_slot() {
+        // Live Untamed layout (2026-10-12): the kennel's active pet index is 0,
+        // the pet sits in companion record 0 (`kennel + 0x30`) and the single
+        // companion slot (`kennel + 0xF8`, the Mechanist mech) is empty. The
+        // original publishes the pet combatant's raw slots 6/11/7 as F1/F2/F3 —
+        // live 12719/20975/12720. Reading `kennel + 0xF8` for every profession
+        // (as the recovery did) found no pet here and left F1-F3 empty.
+        let character = 0x10_000;
+        let combatant = 0x20_000;
+        let kennel = 0x30_000;
+        let pet = 0x40_000;
+        let pet_combatant = 0x50_000;
+        let mut memory = LegacyMixedTreeMemory::default();
+
+        memory.pointer(character + CHARACTER_COMBATANT, combatant);
+        memory.pointer(character + CHARACTER_KENNEL, kennel);
+        memory.u32(kennel + KENNEL_PET_INDEX, 0);
+        memory.pointer(kennel + KENNEL_COMPANION_BASE, pet);
+        memory.pointer(pet + CHARACTER_COMBATANT, pet_combatant);
+        for (raw, id) in [(6, 12_719), (7, 12_720), (11, 20_975)] {
+            let definition = 0x60_000 + raw * 0x100;
+            memory.pointer(
+                pet_combatant + COMBATANT_SKILLDEF_BASE + raw * 8,
+                definition,
+            );
+            memory.u32(definition + SKILLDEF_ID, id);
+        }
+
+        let snapshot = read_skillbar(
+            &memory,
+            character,
+            Some(PROFESSION_RANGER),
+            Some(SPEC_RANGER_UNTAMED),
+            2_000,
+        )
+        .expect("skillbar");
+        let id = |slot| snapshot.bar.slot(slot).map(|ability| ability.id);
+
+        assert_eq!(id(Slot::Profession1), Some(SkillId::Id(12_719)));
+        assert_eq!(id(Slot::Profession2), Some(SkillId::Id(20_975)));
+        assert_eq!(id(Slot::Profession3), Some(SkillId::Id(12_720)));
+    }
+
+    #[test]
+    fn ranger_pet_index_selects_the_matching_companion_record() {
+        // The active pet index picks the companion record: index 1 reads
+        // `kennel + 0x58`. Record 0 and the single companion slot hold decoys
+        // that must not be published for a ranger.
+        let character = 0x10_000;
+        let combatant = 0x20_000;
+        let kennel = 0x30_000;
+        let decoy = 0x40_000;
+        let pet = 0x45_000;
+        let decoy_combatant = 0x50_000;
+        let pet_combatant = 0x55_000;
+        let mut memory = LegacyMixedTreeMemory::default();
+
+        memory.pointer(character + CHARACTER_COMBATANT, combatant);
+        memory.pointer(character + CHARACTER_KENNEL, kennel);
+        memory.u32(kennel + KENNEL_PET_INDEX, 1);
+        memory.pointer(kennel + KENNEL_COMPANION_BASE, decoy);
+        memory.pointer(
+            kennel + KENNEL_COMPANION_BASE + KENNEL_COMPANION_STRIDE,
+            pet,
+        );
+        memory.pointer(kennel + KENNEL_PRIMARY_PET, decoy);
+        memory.pointer(decoy + CHARACTER_COMBATANT, decoy_combatant);
+        memory.pointer(pet + CHARACTER_COMBATANT, pet_combatant);
+        for (raw, id) in [(6, 111_111), (11, 111_112)] {
+            let definition = 0x60_000 + raw * 0x100;
+            memory.pointer(
+                decoy_combatant + COMBATANT_SKILLDEF_BASE + raw * 8,
+                definition,
+            );
+            memory.u32(definition + SKILLDEF_ID, id);
+        }
+        for (raw, id) in [(6, 63_121), (11, 63_334)] {
+            let definition = 0x70_000 + raw * 0x100;
+            memory.pointer(
+                pet_combatant + COMBATANT_SKILLDEF_BASE + raw * 8,
+                definition,
+            );
+            memory.u32(definition + SKILLDEF_ID, id);
+        }
+
+        let snapshot = read_skillbar(
+            &memory,
+            character,
+            Some(PROFESSION_RANGER),
+            Some(SPEC_RANGER_UNTAMED),
+            2_000,
+        )
+        .expect("skillbar");
+        let id = |slot| snapshot.bar.slot(slot).map(|ability| ability.id);
+
+        assert_eq!(id(Slot::Profession1), Some(SkillId::Id(63_121)));
+        assert_eq!(id(Slot::Profession2), Some(SkillId::Id(63_334)));
+    }
+
+    #[test]
+    fn non_untamed_ranger_publishes_only_the_second_pet_command() {
+        // The original's `sub_1800E2560` takes `a4 = (spec == 72)`: for every
+        // other ranger spec it returns right after the second pet command, so
+        // F1/F3 never come from the pet.
+        let character = 0x10_000;
+        let combatant = 0x20_000;
+        let kennel = 0x30_000;
+        let pet = 0x40_000;
+        let pet_combatant = 0x50_000;
+        let mut memory = LegacyMixedTreeMemory::default();
+
+        memory.pointer(character + CHARACTER_COMBATANT, combatant);
+        memory.pointer(character + CHARACTER_KENNEL, kennel);
+        memory.u32(kennel + KENNEL_PET_INDEX, 0);
+        memory.pointer(kennel + KENNEL_COMPANION_BASE, pet);
+        memory.pointer(pet + CHARACTER_COMBATANT, pet_combatant);
+        for (raw, id) in [(6, 63_121), (7, 63_236), (11, 63_334)] {
+            let definition = 0x60_000 + raw * 0x100;
+            memory.pointer(
+                pet_combatant + COMBATANT_SKILLDEF_BASE + raw * 8,
+                definition,
+            );
+            memory.u32(definition + SKILLDEF_ID, id);
+        }
+
+        let snapshot = read_skillbar(&memory, character, Some(PROFESSION_RANGER), Some(55), 2_000)
+            .expect("skillbar");
+        let id = |slot| snapshot.bar.slot(slot).map(|ability| ability.id);
+
+        assert_eq!(id(Slot::Profession1), None);
+        assert_eq!(id(Slot::Profession2), Some(SkillId::Id(63_334)));
+        assert_eq!(id(Slot::Profession3), None);
+    }
+
+    #[test]
+    fn ranger_pet_index_outside_the_original_mask_resolves_no_pet() {
+        // The original gates the index on `0x2F >> index`, so index 4 has no pet
+        // even though the record map points it at companion record 0.
+        let character = 0x10_000;
+        let combatant = 0x20_000;
+        let kennel = 0x30_000;
+        let pet = 0x40_000;
+        let pet_combatant = 0x50_000;
+        let mut memory = LegacyMixedTreeMemory::default();
+
+        memory.pointer(character + CHARACTER_COMBATANT, combatant);
+        memory.pointer(character + CHARACTER_KENNEL, kennel);
+        memory.u32(kennel + KENNEL_PET_INDEX, 4);
+        memory.pointer(kennel + KENNEL_COMPANION_BASE, pet);
+        memory.pointer(pet + CHARACTER_COMBATANT, pet_combatant);
+        // A local skill, so the skillbar itself is published.
+        let heal_definition = 0x28_000;
+        memory.pointer(combatant + COMBATANT_SKILLDEF_BASE, heal_definition);
+        memory.u32(heal_definition + SKILLDEF_ID, 55_555);
+        let definition = 0x60_000 + 6 * 0x100;
+        memory.pointer(pet_combatant + COMBATANT_SKILLDEF_BASE + 6 * 8, definition);
+        memory.u32(definition + SKILLDEF_ID, 63_121);
+
+        let snapshot = read_skillbar(
+            &memory,
+            character,
+            Some(PROFESSION_RANGER),
+            Some(SPEC_RANGER_UNTAMED),
+            2_000,
+        )
+        .expect("skillbar");
+
+        assert_eq!(
+            snapshot.bar.slot(Slot::Heal).map(|ability| ability.id),
+            Some(SkillId::Id(55_555))
+        );
+        assert!(snapshot.bar.slot(Slot::Profession1).is_none());
     }
 
     #[test]
@@ -5192,7 +5478,7 @@ mod tests {
         memory.u32(node + COOLDOWN_NODE_REMAINING, 8_000);
         memory.u32(node + COOLDOWN_NODE_TOTAL, 10_000);
 
-        let first = read_skillbar(&memory, character, 1_000).expect("skillbar");
+        let first = read_skillbar(&memory, character, None, None, 1_000).expect("skillbar");
         let ability = first.bar.slot(Slot::Heal).expect("heal ability");
         assert_eq!(ability.last_update, 1_000);
         assert_eq!(ability.recharge_remaining, 8_000);
@@ -5202,7 +5488,7 @@ mod tests {
         // anchor stays, so the countdown keeps ticking down from it instead of
         // jumping back to the node value every poll.
         memory.u32(node + COOLDOWN_NODE_REMAINING, 7_900);
-        let second = read_skillbar(&memory, character, 1_100).expect("skillbar");
+        let second = read_skillbar(&memory, character, None, None, 1_100).expect("skillbar");
         let ability = second.bar.slot(Slot::Heal).expect("heal ability");
         assert_eq!(ability.last_update, 1_000);
         assert_eq!(ability.recharge_remaining(1_100), 7_900);
@@ -5265,7 +5551,7 @@ mod tests {
         memory.u32(combatant + 0x128, 1);
         memory.u32(combatant + 0x74, 0);
 
-        let skillbar = read_skillbar(&memory, character, 2_000).expect("skillbar");
+        let skillbar = read_skillbar(&memory, character, None, None, 2_000).expect("skillbar");
         let ability = skillbar.bar.slot(Slot::Heal).expect("heal ability");
 
         assert!(ability.info.contains(AbilityInfo::AutoAttack));
