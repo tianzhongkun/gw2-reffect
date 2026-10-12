@@ -1,6 +1,6 @@
 [workspace]
-members = ["reffect", "reffect_core", "reffect_internal"]
-default-members = ["reffect"]
+members = ["loong_reader", "loong_core", "loong_internal"]
+default-members = ["loong_reader"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -14,9 +14,6 @@ serde_with = "3.14.0"
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.12"
 windows = "0.62.2"
-
-[patch."https://github.com/zerthox/gw2-reffect"]
-reffect_internal = { path = "reffect_internal" }
 
 [profile.release]
 lto = true

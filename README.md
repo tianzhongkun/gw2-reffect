@@ -1,56 +1,81 @@
-# Reffect
-Reffect is a [Guild Wars 2](https://guildwars2.com) addon allowing customizable display of effects, resources, and abilities.
+# Loong Reader
 
-This project is inspired by [WeakAuras](https://github.com/WeakAuras/WeakAuras2) from World of Warcraft and [GW2Clarity](https://github.com/Friendly0Fire/GW2Clarity).
-Requires the [Nexus](https://github.com/RaidcoreGG/Nexus) addon manager ([website](https://raidcore.gg/Nexus)). We have channels for discussion and sharing packs on the [Raidcore (Nexus) Discord](https://discord.gg/raidcore).
+Loong Reader 是一个独立的《激战2》(Guild Wars 2) 内存读取插件。
+它读取游戏客户端里的角色状态与官方 API 元数据，并通过 C ABI 快照
+把数据交给**进程内**的其它模块（例如 ACR 战斗循环）使用。
 
-**WARNING:** Reffect performs memory reading. Use the addon and created displays at your own risk. See [our information policy](#information-policy) below and the [Guild Wars 2 policy on third-party programs](https://help.guildwars2.com/hc/en-us/articles/360013625034-Policy-Third-Party-Programs).
+本仓库只保留**读取**能力：内存读取器、API 元数据，以及一个调试窗口。
+不包含任何显示元素、编辑器或触发器。
 
-![Boons display](./docs/img/boons.png)
-![Editor](./docs/img/editor.png)
+> **警告**：本插件会读取游戏内存。使用风险自负，并请遵守
+> [《激战2》第三方程序政策](https://help.guildwars2.com/hc/en-us/articles/360013625034-Policy-Third-Party-Programs)。
+> 不保证在 PvP / WvW 等竞技模式下可用。
 
-## Features
-- Display information as custom icons or text
-- Show or hide displays based on current map, profession, specialization, mount etc.
-- Ingame editor for display creation & configuration
-- Sharing created displays as individual packs
-- Effect stacks & durations mimicking ingame behavior
-- Ability cooldowns mimicking ingame behavior
-- Health, barrier, endurance, defiance, profession resources
+## 功能
 
-## Installation
-1. Install the [Nexus](https://github.com/RaidcoreGG/Nexus) addon manager ([website](https://raidcore.gg/Nexus)).
-2. Download [`reffect.dll`](../../releases/latest) and place it in your `addons` folder (e.g. `C:\Program Files\Guild Wars 2\addons`).
-3. Open the Nexus addon window, click on the refresh button if necessary and load Reffect.
-4. *Optional: read the [getting started guide](./docs/getting-started.md) and [documentation on elements](./docs/elements.md).*
+- **角色状态读取**：种族、职业、精英特长、坐骑、世界坐标
+- **资源**：生命、护盾、耐力、职业资源、宠物状态
+- **增益/症状**：层数与剩余时间
+- **技能栏与冷却**：含不在当前技能栏上的技能（另一套武器）
+- **配置**：特性、技能选择、装备武器、法印、古物
+- **目标**：分类（种类 / 立场 / 等级 / 采集类型）、原始机关类型、世界坐标与距离
+- **队伍**：队伍类型与成员生命、增益
+- **官方 API 元数据**：技能与物品信息（名称、图标、类别等）
+- **C ABI 快照**：`loong_snapshot()`，供 C / C++ / C# / Python / 其它插件直接读取
+- **调试窗口**：在 Nexus 选项里勾选“调试窗口”即可查看各数据域当前状态
 
-## Information Policy
-Reffect uses memory reading to access internal information of the Guild Wars 2 game client.
-The information is retrieved with the following policy in mind:
+## 安装
 
-1. Information which is expected to be known by the player and does generally **not** change during combat is fine to give at all times. For example the player's current profession & elite specialization, selected traits, equipped weapons or the map they are on.
+1. 安装 [Nexus](https://github.com/RaidcoreGG/Nexus) 插件管理器。
+2. 把编译出的 `loong_reader.dll` 放进游戏的 `addons` 目录
+   （例如 `C:\Program Files\Guild Wars 2\addons`）。
+3. 打开 Nexus 插件窗口，必要时点刷新，然后加载 **Loong Reader**。
 
-2. Combat information must be currently conveyed to the player via the game's own graphical user interface. If it is conveyed to the player anyway, we consider it fine to give the same pieces of information in an alternative format. For example their currently visible effects, abilities or health.
+## C ABI 快照
 
-3. The alternative display format must limit combination of individual pieces of combat information to a reasonably low logical complexity. We do **not** consider it fine to combine individual pieces of combat information to new information that is much more than the sum of its parts. For example logic combining current might stacks, current quickness and elite ability recharge into a single piece of displayed information is **not** possible.
+导出的函数与结构体布局见 [docs/loong-snapshot-api.md](./docs/loong-snapshot-api.md)。
+头文件为 [loong_snapshot.h](./loong_snapshot.h)，Python 示例为
+[scripts/read_snapshot.py](./scripts/read_snapshot.py)。
 
-## Limitations 
-- Not available in competitive modes (PvP & WvW).
-- Generic effects do not show durations above 5 seconds. *Ingame this information is usually only visible on hover. With 5s left effect icons start to blink, conveying the remaining duration to the player.*
-- Screen border & squad highlight effects do not show durations.
-- No true stack count for duration stacking effects.
-- No information about effects hidden from the player.
-- No combining logic for combat information outside of grouping stacks of multiple effects into a single UI element.
-- No information about profession resources when hidden from the player.
-- No information about ability cooldowns when hidden from the player.
-- No accurate health information for target & group members.
-- No generic effects for group members. *Ingame these are only displayable in Party UI and not Squad UI.*
+```c
+#include "loong_snapshot.h"
 
-## Building from source
-Reffect includes an open `reffect_internal` implementation for runtime state and metadata reading. Builds from this repository retain memory-backed features such as player, target, group, build, equipment, skills, and effect state.
+const RfSnapshot* snap = loong_snapshot();
+if (snap->target_valid && snap->target_distance >= 0.0f) {
+    /* 依据目标分类与距离决定是否出手 */
+}
+```
 
-The reader validates every recovered pointer chain and publishes a domain-specific error when a Guild Wars 2 client update makes a layout incompatible. Use the in-addon debug view to inspect unavailable domains after an update.
+旧的 `reffect_snapshot()` / `reffect_snapshot_size()` 以及
+`reffect_snapshot.h` 作为兼容别名保留，既有代码无需修改。
 
-## Pack format
-The JSON schema for the pack format is [docs/schema.json](./docs/schema.json).
-A new JSON schema file can be generated by running `cargo run --examples schema --features schema`.
+## 从源码构建
+
+需要 Rust 1.95 或更高版本：
+
+```
+cargo build --release
+```
+
+产物为 `target/release/loong_reader.dll`。
+
+版本号即构建日期（例如 `2026.10.13`），作者为 loong。
+
+## 仓库结构
+
+| crate | 说明 |
+|---|---|
+| [loong_reader](./loong_reader) | 插件外壳：生命周期、调试窗口、C ABI 导出 |
+| [loong_core](./loong_core) | 数据模型、上下文、快照布局（`snapshot.rs`） |
+| [loong_internal](./loong_internal) | 内存读取器与官方 API 元数据 |
+
+读取器会校验每一条恢复出来的指针链；当游戏客户端更新导致布局不兼容时，
+会按数据域发布具体错误，可在调试窗口中查看不可用的数据域。
+
+## 许可与致谢
+
+本项目以 **LGPL-3.0-or-later** 许可发布，派生自
+[gw2-reffect](https://github.com/zerthox/gw2-reffect)（作者 Zerthox），
+并受 [WeakAuras](https://github.com/WeakAuras/WeakAuras2) 与
+[GW2Clarity](https://github.com/Friendly0Fire/GW2Clarity) 启发。
+原始版权与许可声明予以保留，详见 [LICENSE](./LICENSE)。

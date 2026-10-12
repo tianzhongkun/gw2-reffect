@@ -1,20 +1,19 @@
-"""
-ctypes reader for the reffect_open DLL snapshot.
+r"""
+loong_reader.dll 快照的 ctypes 读取器。
 
-The DLL is an IN-PROCESS game addon: `reffect_snapshot()` reads the state the
-reader publishes inside the game process. This example therefore only returns
-real data when it runs as code that is itself loaded into the game process
-(e.g. via a manual load / DllMain hook, or a script host running in-process).
-Run it outside the game and every validity flag is 0.
+该 DLL 是进程内游戏插件：loong_snapshot() 读取读取器发布在游戏进程里的状态。
+因此只有在游戏进程内运行（例如手动加载 / DllMain 钩子 / 进程内脚本宿主）
+才会返回真实数据；在游戏外运行所有有效位都是 0。
 
-Usage (in-process):
-    from read_snapshot import reffect  # see load below
+用法（进程内）：
+    from read_snapshot import load, read
+    snap = read(load(r"C:\path\to\loong_reader.dll"))
 
-The struct definitions must stay byte-for-byte in sync with reffect_snapshot.h.
+结构体定义必须与 loong_snapshot.h 逐字节保持一致。
 """
 import ctypes as C
 
-# --- struct layout (must match reffect_snapshot.h) ---------------------------
+# --- struct layout (must match loong_snapshot.h) -----------------------------
 class RfResource(C.Structure):
     _fields_ = [("current", C.c_float), ("max", C.c_float)]
 
@@ -138,18 +137,31 @@ class RfSnapshot(C.Structure):
     ]
 
 
+def _bind(dll, names):
+    """Bind the first symbol present in the DLL, preferring the new names."""
+    for name in names:
+        fn = getattr(dll, name, None)
+        if fn is not None:
+            return fn
+    raise AttributeError(f"none of {names} found in DLL")
+
+
 def load(path):
-    """Load the DLL and bind reffect_snapshot()."""
+    """Load the DLL and bind the snapshot entry points."""
     dll = C.CDLL(path)
-    dll.reffect_snapshot.restype = C.POINTER(RfSnapshot)
-    dll.reffect_snapshot.argtypes = []
-    dll.reffect_snapshot_size.restype = C.c_size_t
+    snapshot = _bind(dll, ("loong_snapshot", "reffect_snapshot"))
+    snapshot.restype = C.POINTER(RfSnapshot)
+    snapshot.argtypes = []
+    size = _bind(dll, ("loong_snapshot_size", "reffect_snapshot_size"))
+    size.restype = C.c_size_t
+    dll.snapshot = snapshot
+    dll.snapshot_size = size
     return dll
 
 
 def read(dll):
     """Return a (possibly empty) RfSnapshot for the current game state."""
-    ptr = dll.reffect_snapshot()
+    ptr = dll.snapshot()
     if not ptr:
         return None
     return ptr.contents
@@ -157,7 +169,7 @@ def read(dll):
 
 if __name__ == "__main__":
     # Path as loaded in the game process. Adjust to wherever the DLL is.
-    dll = load(r"C:\path\to\reffect_open.dll")
+    dll = load(r"C:\path\to\loong_reader.dll")
     snap = read(dll)
     if snap is None or not snap.resources_valid:
         print("no state (expected when running outside the game process)")

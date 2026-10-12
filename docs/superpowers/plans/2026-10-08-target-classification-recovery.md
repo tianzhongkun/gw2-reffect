@@ -9,7 +9,7 @@
 - **怪物等级**（Rank）：Ambient / Normal / Veteran / Elite / Champion / Legendary / Epic
 - **采集专业**：矿（Mining）/ 树（Logging）/ 草（Harvesting）
 
-分类的**类型与触发器已经完成**（`reffect_core::context::TargetCategory` + `ProgressSource::TargetCategory`）。
+分类的**类型与触发器已经完成**（`loong_core::context::TargetCategory` + `ProgressSource::TargetCategory`）。
 本文件只描述剩下的数据层工作：定位当前客户端里承载这些字段的偏移。
 
 ## 已经确定的事实
@@ -130,7 +130,7 @@ kx-vision 是 **GPL-3.0**，本项目是 **LGPL-3.0**。这里只使用了**逆�
 
 ### 1. 采集日志
 
-`reffect_internal` 里已经加了一个探针：**每选中一个目标，就向 Nexus 日志写一次候选结构的
+`loong_internal` 里已经加了一个探针：**每选中一个目标，就向 Nexus 日志写一次候选结构的
 hexdump**（每次选择恰好一份）。输出格式：
 
 ```
@@ -308,7 +308,7 @@ candidates (constant per label, different across labels):
 
 定位到偏移后：
 
-1. 在 `reffect_internal/src/game/state.rs` 顶部按现有风格加常量，并写清楚它是**实测**得到的
+1. 在 `loong_internal/src/game/state.rs` 顶部按现有风格加常量，并写清楚它是**实测**得到的
    （附日期与验证方式），例如：
 
    ```rust

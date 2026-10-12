@@ -16,7 +16,7 @@ jobs:
       - run: cargo build --release
       - uses: actions/upload-artifact@v7
         with:
-          name: reffect
+          name: loong_reader
           path: |
-            target/release/reffect.dll
-            target/release/reffect.pdb
+            target/release/loong_reader.dll
+            target/release/loong_reader.pdb

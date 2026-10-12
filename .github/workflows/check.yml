@@ -6,15 +6,15 @@ on:
     branches:
       - main
     paths:
-      - reffect/**
-      - reffect_core/**
-      - reffect_internal/**
+      - loong_reader/**
+      - loong_core/**
+      - loong_internal/**
       - Cargo.toml
   pull_request:
     paths:
-      - reffect/**
-      - reffect_core/**
-      - reffect_internal/**
+      - loong_reader/**
+      - loong_core/**
+      - loong_internal/**
       - Cargo.toml
 
 jobs:

@@ -1,6 +1,6 @@
 # Runtime Reader Recovery — Verification Against Reffect.dll 0.13.1
 
-Independent reverse-engineering verification of the recovered `reffect_internal`
+Independent reverse-engineering verification of the recovered `loong_internal`
 memory-reading code against the shipping closed-source plugin
 `Reffect.dll` (the "latest plugin" supplied at the repo root).
 
@@ -154,7 +154,7 @@ Installed rustup + used the machine's VS2022 MSVC toolchain and ran the reader
 crate's tests:
 
 ```
-cargo test -p reffect_internal --lib
+cargo test -p loong_internal --lib
 test result: ok. 80 passed; 0 failed; 0 ignored
 ```
 
@@ -224,7 +224,7 @@ live process and the right field. Fix applied: profession 8 now validates with a
 new `sane_life_force` (upper bound 1_000_000) instead of `sane_resource`;
 warrior adrenaline and mesmer clones stay under 1000 and keep `sane_resource`,
 so no other resource is affected. Added a regression test seeded with the live
-`12071.67 / 19227.82` values. `cargo test -p reffect_internal --lib` = **81
+`12071.67 / 19227.82` values. `cargo test -p loong_internal --lib` = **81
 passed**.
 
 Method reusable for the remaining Elementalist item — see the
@@ -281,7 +281,7 @@ directly and the pet fallback correctly leaves them alone. The old code read
 published slot (weapons, heal, utilities, elite, F5, special action, mount)
 matched the original in the same comparison.
 
-Fixed in `reffect_internal/src/game/state.rs` (`owned_pet_character` /
+Fixed in `loong_internal/src/game/state.rs` (`owned_pet_character` /
 `ranger_pet_character` / `pet_skill_slots`), with four regression tests seeded
-from the live layout; `cargo test -p reffect_internal --lib` = 125 passed.
+from the live layout; `cargo test -p loong_internal --lib` = 125 passed.
 

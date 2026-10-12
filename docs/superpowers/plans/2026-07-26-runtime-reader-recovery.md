@@ -6,7 +6,7 @@
 
 **Architecture:** A compact Windows detour invokes the TLS-backed Context getter only after `GameThreadUpdate` returns, validates and atomically publishes the current local-character tree, and is removed before unload. The existing worker consumes this captured pointer and applies independently decoded domains to `Context`.
 
-**Tech Stack:** Rust 2024, Win32 FFI (`VirtualAlloc`, `VirtualProtect`, `FlushInstructionCache`), `ReadProcessMemory`, `reffect_core::Context`, Nexus logging.
+**Tech Stack:** Rust 2024, Win32 FFI (`VirtualAlloc`, `VirtualProtect`, `FlushInstructionCache`), `ReadProcessMemory`, `loong_core::Context`, Nexus logging.
 
 ## Global Constraints
 
@@ -22,9 +22,9 @@
 ### Task 1: Define testable capture and publication contracts
 
 **Files:**
-- Create: `reffect_internal/src/game/capture.rs`
-- Modify: `reffect_internal/src/game.rs`
-- Test: `reffect_internal/src/game/capture.rs`
+- Create: `loong_internal/src/game/capture.rs`
+- Modify: `loong_internal/src/game.rs`
+- Test: `loong_internal/src/game/capture.rs`
 
 **Interfaces:**
 - Produces `CapturedContext { collection: usize, cli: usize, local: usize, captured_at: u32 }`.
@@ -55,7 +55,7 @@ fn rejects_stale_capture() {
 
 - [ ] **Step 2: Verify red**
 
-Run: `cargo test -p reffect_internal capture::tests -- --nocapture`
+Run: `cargo test -p loong_internal capture::tests -- --nocapture`
 
 Expected: compilation failure because `capture` and its public contracts do not exist.
 
@@ -76,17 +76,17 @@ Implement atomics for the four `CapturedContext` words and make stale reads retu
 
 - [ ] **Step 4: Verify green**
 
-Run: `cargo test -p reffect_internal capture::tests -- --nocapture`
+Run: `cargo test -p loong_internal capture::tests -- --nocapture`
 
 Expected: both tests pass.
 
 ### Task 2: Install an unload-safe game-thread detour
 
 **Files:**
-- Create: `reffect_internal/src/game/hook.rs`
-- Modify: `reffect_internal/src/game.rs`
-- Modify: `reffect_internal/Cargo.toml`
-- Test: `reffect_internal/src/game/hook.rs`
+- Create: `loong_internal/src/game/hook.rs`
+- Modify: `loong_internal/src/game.rs`
+- Modify: `loong_internal/Cargo.toml`
+- Test: `loong_internal/src/game/hook.rs`
 
 **Interfaces:**
 - Produces `GameThreadCapture::install() -> Result<Self, GameError>` and `Drop` restoration.
@@ -113,7 +113,7 @@ fn rel32_requires_reachable_destination() {
 
 - [ ] **Step 2: Verify red**
 
-Run: `cargo test -p reffect_internal hook::tests -- --nocapture`
+Run: `cargo test -p loong_internal hook::tests -- --nocapture`
 
 Expected: compilation failure because hook helpers do not exist.
 
@@ -123,19 +123,19 @@ Implement page protection, trampoline allocation within rel32 range, stolen-byte
 
 - [ ] **Step 4: Verify green and compile native FFI**
 
-Run: `cargo test -p reffect_internal hook::tests -- --nocapture`
+Run: `cargo test -p loong_internal hook::tests -- --nocapture`
 
 Expected: pure helper tests pass.
 
-Run: `cargo check -p reffect_internal --target x86_64-pc-windows-msvc`
+Run: `cargo check -p loong_internal --target x86_64-pc-windows-msvc`
 
 Expected: Win32 FFI and hook module compile.
 
 ### Task 3: Make game-state decoding domain independent
 
 **Files:**
-- Modify: `reffect_internal/src/game/state.rs`
-- Test: `reffect_internal/src/game/state.rs`
+- Modify: `loong_internal/src/game/state.rs`
+- Test: `loong_internal/src/game/state.rs`
 
 **Interfaces:**
 - Replaces `RuntimeSnapshot` required `resources` and `buffs` with independent domain fields.
@@ -161,7 +161,7 @@ fn unavailable_buffs_do_not_block_resources_or_skillbar_publication() {
 
 - [ ] **Step 2: Verify red**
 
-Run: `cargo test -p reffect_internal unavailable_buffs_do_not_block -- --nocapture`
+Run: `cargo test -p loong_internal unavailable_buffs_do_not_block -- --nocapture`
 
 Expected: test fails because the snapshot construction currently requires a `BuffMap` and `apply` has no isolated state seam.
 
@@ -171,16 +171,16 @@ Create a testable `apply_to(&mut Context)` helper. Decode identity, resources, s
 
 - [ ] **Step 4: Verify green**
 
-Run: `cargo test -p reffect_internal unavailable_buffs_do_not_block -- --nocapture`
+Run: `cargo test -p loong_internal unavailable_buffs_do_not_block -- --nocapture`
 
 Expected: test passes and resource/skillbar remain `Ok`.
 
 ### Task 4: Restore current-client fields and runtime observability
 
 **Files:**
-- Modify: `reffect_internal/src/game/state.rs`
-- Modify: `reffect_internal/src/lib.rs`
-- Test: `reffect_internal/src/game/state.rs`
+- Modify: `loong_internal/src/game/state.rs`
+- Modify: `loong_internal/src/lib.rs`
+- Test: `loong_internal/src/game/state.rs`
 
 **Interfaces:**
 - `OpenInternal::init()` installs capture before starting state/catalog workers.
@@ -204,7 +204,7 @@ fn locked_placeholder_skill_is_not_published() {
 
 - [ ] **Step 2: Verify red only for new health helper**
 
-Run: `cargo test -p reffect_internal current_health_layout_accepts_valid_float_pair -- --nocapture`
+Run: `cargo test -p loong_internal current_health_layout_accepts_valid_float_pair -- --nocapture`
 
 Expected: failure until the named helper is introduced.
 

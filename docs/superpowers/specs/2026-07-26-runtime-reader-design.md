@@ -2,7 +2,7 @@
 
 ## 目标
 
-恢复原私有 `reffect_internal` 的运行时数据路径，使当前 GW2 客户端中的内存字段能够发布到 `reffect_core::context::Context`，同时禁止 Nexus 覆盖本地构建。
+恢复原私有 `loong_internal` 的运行时数据路径，使当前 GW2 客户端中的内存字段能够发布到 `loong_core::context::Context`，同时禁止 Nexus 覆盖本地构建。
 
 ## 已验证事实
 

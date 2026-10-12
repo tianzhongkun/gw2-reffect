@@ -1,0 +1,29 @@
+[package]
+name = "loong_reader"
+version = "2026.10.13"
+authors = ["loong"]
+edition = "2024"
+description = "龙之读取器：读取激战2客户端内存与官方 API，输出角色状态快照，供 ACR 等进程内模块使用。"
+license = "LGPL-3.0-or-later"
+rust-version = "1.95"
+
+[dependencies]
+log = { workspace = true }
+nexus = { git = "https://github.com/zerthox/nexus-rs", features = ["log"] }
+loong_core = { path = "../loong_core" }
+loong_internal = { path = "../loong_internal" }
+strum = { workspace = true }
+
+[build-dependencies]
+winresource = "0.1.17"
+
+[lib]
+name = "loong_reader"
+crate-type = ["lib", "cdylib"]
+
+[package.metadata.winresource]
+ProductName = "Loong Reader"
+OriginalFilename = "loong_reader.dll"
+
+[features]
+profile = ["loong_core/profile", "loong_internal/profile"]

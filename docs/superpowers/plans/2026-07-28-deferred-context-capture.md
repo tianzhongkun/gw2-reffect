@@ -22,9 +22,9 @@
 
 **Files:**
 
-- Modify: `reffect_internal/src/game/capture.rs`
-- Modify: `reffect_internal/src/game/hook.rs`
-- Test: `reffect_internal/src/game.rs`
+- Modify: `loong_internal/src/game/capture.rs`
+- Modify: `loong_internal/src/game/hook.rs`
+- Test: `loong_internal/src/game.rs`
 
 **Interfaces:**
 
@@ -56,7 +56,7 @@ Run:
 ```powershell
 $tool='C:\Users\Loong\AppData\Local\Temp\gw2-reffect-rust-verify-20260726'
 $env:CARGO_HOME="$tool\cargo"; $env:RUSTUP_HOME="$tool\rustup"; $env:PATH="$tool\cargo\bin;$env:PATH"
-cargo test -p reffect_internal invalid_startup_tree_retains_a_fresh_collection_for_later_resolution -- --nocapture
+cargo test -p loong_internal invalid_startup_tree_retains_a_fresh_collection_for_later_resolution -- --nocapture
 ```
 
 Expected: compilation failure because the collection-anchor API is absent.
@@ -85,7 +85,7 @@ Run:
 ```powershell
 $tool='C:\Users\Loong\AppData\Local\Temp\gw2-reffect-rust-verify-20260726'
 $env:CARGO_HOME="$tool\cargo"; $env:RUSTUP_HOME="$tool\rustup"; $env:PATH="$tool\cargo\bin;$env:PATH"
-cargo test -p reffect_internal --lib
+cargo test -p loong_internal --lib
 ```
 
 Expected: all capture, Buff, resource, and ability cooldown tests pass.
